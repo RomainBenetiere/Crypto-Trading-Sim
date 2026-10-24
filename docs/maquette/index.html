@@ -1,0 +1,777 @@
+<style>
+#dash-root { --dash-gutter: var(--cds-pad-lg); }
+.mc-wrap { max-width: 1400px; margin-inline: auto; font-family: var(--font-anthropic-sans); display: flex; flex-direction: column; gap: var(--cds-gap-lg); }
+.mc-head h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0 0 var(--cds-gap-xs); }
+.mc-take { color: var(--color-fg-muted); font-size: var(--cds-font-size-body); margin: 0; min-height: 1.4em; }
+.mc-take b { font-weight: 500; color: var(--color-fg); }
+.mc-badge { display: inline-block; font-size: var(--cds-font-size-caption); color: var(--color-warn); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: 2px var(--cds-pad-sm); margin-top: var(--cds-gap-sm); }
+.mc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: var(--cds-gap-md); }
+.mc-kpi, .mc-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); }
+.mc-kpi .lab { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.mc-kpi .val { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); font-variant-numeric: tabular-nums; margin-top: var(--cds-gap-xs); min-height: 1.3em; }
+.mc-kpi .sub { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-top: var(--cds-gap-xs); min-height: 1.2em; }
+.mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); gap: var(--cds-gap-md); }
+.mc-card h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0; }
+.mc-card .note { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: var(--cds-gap-xs) 0 var(--cds-gap-md); }
+.mc-section { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: var(--cds-gap-md) 0 0; }
+.mc-chart { position: relative; min-height: 320px; }
+.mc-tornado { position: relative; min-height: 420px; }
+.mc-tip { position: absolute; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); border-radius: var(--cds-radius); box-shadow: var(--cds-shadow-popover); padding: var(--cds-pad-xs) var(--cds-pad-sm); font-size: var(--cds-font-size-caption); white-space: nowrap; display: none; z-index: 2; }
+.mc-tip .d { color: var(--cds-text-secondary); margin-bottom: 2px; }
+.mc-tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.mc-legend { display: flex; flex-wrap: wrap; gap: var(--cds-gap-sm) var(--cds-gap-md); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-bottom: var(--cds-gap-sm); min-height: 1.2em; }
+.mc-legend span i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.mc-tablebox { overflow: auto; max-height: 520px; }
+.mc-tablebox.short { max-height: none; }
+.mc-table { width: 100%; border-collapse: collapse; font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; }
+.mc-table th { position: sticky; top: 0; background: var(--color-panel); text-align: left; font-weight: var(--cds-font-weight-medium); color: var(--color-fg-muted); padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.mc-table th button { all: unset; cursor: pointer; }
+.mc-table td { padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.mc-table .num { text-align: right; }
+.mc-table tbody tr.click { cursor: pointer; }
+.mc-table tbody tr.sel td { background: var(--cds-chart-grid); }
+.mc-pos { color: var(--color-ok); }
+.mc-neg { color: var(--color-bad); }
+.mc-tools { display: flex; flex-wrap: wrap; gap: var(--cds-gap-sm); align-items: center; margin-bottom: var(--cds-gap-sm); }
+.mc-tools input { font: inherit; font-size: var(--cds-font-size-caption); padding: var(--cds-pad-xs) var(--cds-pad-sm); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); background: var(--color-bg); color: var(--color-fg); min-width: 12rem; }
+.mc-seg button { font: inherit; font-size: var(--cds-font-size-caption); padding: var(--cds-pad-xs) var(--cds-pad-sm); border: 1px solid var(--color-border-line); background: var(--color-bg); color: var(--color-fg-muted); cursor: pointer; }
+.mc-seg button:first-child { border-radius: var(--cds-radius) 0 0 var(--cds-radius); }
+.mc-seg button:last-child { border-radius: 0 var(--cds-radius) var(--cds-radius) 0; }
+.mc-seg button[aria-pressed="true"] { color: var(--color-fg); background: var(--color-panel); font-weight: var(--cds-font-weight-medium); }
+.mc-count { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.mc-chips { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); margin: var(--cds-gap-sm) 0 var(--cds-gap-md); }
+.mc-chip { font-size: var(--cds-font-size-caption); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: 2px var(--cds-pad-sm); color: var(--color-fg-muted); }
+.mc-chip b { font-weight: 500; color: var(--color-fg); }
+.mc-cash { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-top: var(--cds-gap-sm); }
+.mc-cash b { font-weight: 500; color: var(--color-fg); }
+[data-dash-source-state=empty] { color: transparent; }
+[data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+.mc-fail { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); min-height: inherit; }
+.mc-fail::before { content: ""; width: .375rem; height: .375rem; border-radius: 50%; background: var(--color-bad); }
+@media (max-width: 700px) { .mc-hide-sm { display: none; } }
+.mc-ctrl { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-gap-sm); background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-md) var(--cds-pad-lg); }
+.mc-pill { font-size: var(--cds-font-size-caption); font-weight: var(--cds-font-weight-medium); border-radius: 999px; padding: 2px var(--cds-pad-sm); border: 1px solid var(--color-border-line); min-width: 5rem; text-align: center; }
+.mc-pill.run { color: var(--color-ok); } .mc-pill.hold { color: var(--color-warn); } .mc-pill.idle { color: var(--color-fg-muted); }
+.mc-ctrl .info { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); flex: 1 1 14rem; }
+.mc-btn { font: inherit; font-size: var(--cds-font-size-caption); padding: var(--cds-pad-xs) var(--cds-pad-md); border-radius: var(--cds-radius); border: 1px solid var(--color-border-line); background: var(--color-bg); color: var(--color-fg); cursor: pointer; }
+.mc-btn.primary { border-color: var(--color-fg); font-weight: var(--cds-font-weight-medium); }
+.mc-btn.danger { color: var(--color-bad); }
+.mc-btn:disabled { opacity: .4; cursor: not-allowed; }
+.mc-confirm { font-size: var(--cds-font-size-caption); color: var(--color-bad); display: inline-flex; gap: var(--cds-gap-xs); align-items: center; flex-wrap: wrap; }
+.mc-ctrl .note2 { flex-basis: 100%; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: 0; }
+.mc-tabs { display: flex; gap: var(--cds-gap-xs); border-bottom: 1px solid var(--color-border-line); }
+.mc-tabs button { font: inherit; font-size: var(--cds-font-size-body); background: none; border: none; border-bottom: 2px solid transparent; padding: var(--cds-pad-sm) var(--cds-pad-md); color: var(--color-fg-muted); cursor: pointer; }
+.mc-tabs button[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-fg); font-weight: var(--cds-font-weight-medium); }
+.mc-page { display: flex; flex-direction: column; gap: var(--cds-gap-lg); }
+.mc-page[hidden] { display: none; }
+.mc-tools select { font: inherit; font-size: var(--cds-font-size-caption); padding: var(--cds-pad-xs) var(--cds-pad-sm); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); background: var(--color-bg); color: var(--color-fg); }
+.mc-table td.diff { font-weight: 500; }
+.mc-table input[type=checkbox] { accent-color: var(--color-fg); cursor: pointer; }
+.mc-table tr.off td { color: var(--color-fg-muted); }
+.mc-basket { font-family: ui-monospace, monospace; font-size: var(--cds-font-size-caption); background: var(--color-bg); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-sm); overflow-x: auto; white-space: nowrap; margin: var(--cds-gap-sm) 0; }
+.mc-msg { font-size: var(--cds-font-size-caption); margin-top: var(--cds-gap-sm); min-height: 1.2em; }
+.mc-table td.diff::after { content: " ●"; color: var(--color-warn); font-size: 0.7em; }
+</style>
+
+<div class="mc-wrap">
+  <header class="mc-head" id="entete">
+    <h1>Simulations Monte-Carlo crypto</h1>
+    <p class="mc-take dash-skeleton" id="takeaway"></p>
+    <span class="mc-badge">Maquette : toutes les données sont fictives. Paper trading live depuis le 1er septembre 2026 sur les cryptos du panier CRYPTO_BASKET, 300 simulations (150 paires typique / optimisé), départ à 1 000 € chacune.</span>
+  </header>
+
+  <div class="mc-ctrl" id="pilotage">
+    <span class="mc-pill idle" id="statut">—</span>
+    <span class="info" id="info-moteur"></span>
+    <button type="button" class="mc-btn" id="btn-optim" disabled>Optimiser les indicateurs</button>
+    <button type="button" class="mc-btn primary" id="btn-run" disabled>Lancer les simulations</button>
+    <button type="button" class="mc-btn danger" id="btn-reset" disabled>Remettre à zéro</button>
+    <span class="mc-confirm" id="confirm-reset" hidden>Positions, ordres et P&amp;L live seront effacés ; les configurations sont conservées.
+      <button type="button" class="mc-btn danger" id="btn-reset-ok">Confirmer</button><button type="button" class="mc-btn" id="btn-reset-no">Annuler</button></span>
+    <p class="note2" id="ctrl-note"></p>
+  </div>
+
+  <nav class="mc-tabs" role="tablist" aria-label="Pages">
+    <button type="button" role="tab" id="tab-suivi" data-page="suivi" aria-selected="true">Suivi des simulations</button>
+    <button type="button" role="tab" id="tab-parametres" data-page="parametres" aria-selected="false">Paramètres des indicateurs</button>
+    <button type="button" role="tab" id="tab-configuration" data-page="configuration" aria-selected="false">Marchés du panier</button>
+  </nav>
+
+  <section class="mc-page" id="suivi">
+  <section class="mc-kpis" id="kpis">
+    <div class="mc-kpi"><div class="lab">Meilleur P&amp;L</div><div class="val dash-skeleton" data-source="synthese" data-field="pnl_meilleur"></div><div class="sub" data-source="synthese" data-field="meilleure_sim"></div></div>
+    <div class="mc-kpi"><div class="lab">P&amp;L médian</div><div class="val dash-skeleton" data-source="synthese" data-field="pnl_median"></div><div class="sub">sur l’ensemble des simulations</div></div>
+    <div class="mc-kpi"><div class="lab">Buy &amp; hold</div><div class="val dash-skeleton" data-source="synthese" data-field="bh_pnl"></div><div class="sub">1 000 € à poids égaux sur tout le panier, frais inclus</div></div>
+    <div class="mc-kpi"><div class="lab">Battent le buy &amp; hold</div><div class="val dash-skeleton" data-source="synthese" data-field="part_bat_bh"></div><div class="sub" data-source="synthese" data-field="nb_bat_bh"></div></div>
+    <div class="mc-kpi"><div class="lab">Optimisé − typique</div><div class="val dash-skeleton" data-source="synthese" data-field="ecart_optimise_typique"></div><div class="sub">écart moyen de P&amp;L entre jumelles</div></div>
+    <div class="mc-kpi"><div class="lab">Trades clôturés par simulation</div><div class="val dash-skeleton" data-source="synthese" data-field="trades_moyen"></div><div class="sub" id="seuil"></div></div>
+  </section>
+
+  <div class="mc-grid">
+    <div class="mc-card" id="carte-valeur">
+      <h2>Valeur du portefeuille : top 5 et buy &amp; hold</h2>
+      <p class="note">Valeur quotidienne depuis le démarrage du live, frais déduits. Zone grisée : période de hold (simulations arrêtées sans remise à zéro, positions conservées et valorisées). En production : valeur enregistrée chaque heure.</p>
+      <div class="mc-legend" id="legende-valeur" data-source="valeur_portefeuille"></div>
+      <div class="mc-chart dash-skeleton" id="graph-valeur" data-source="valeur_portefeuille periodes"></div>
+    </div>
+    <div class="mc-card" id="carte-tornade">
+      <h2>Variables les plus influentes sur le P&amp;L</h2>
+      <p class="note">Écart de P&amp;L moyen entre la pire et la meilleure option (variables par catégories) ou entre le tiers bas et le tiers haut de la plage (variables numériques), autour du P&amp;L moyen. Barres pâles : écart non significatif (moins de 2 erreurs-types).</p>
+      <div class="mc-legend" id="legende-tornade"><span><i style="background: var(--cds-chart-muted)"></i>Option la moins favorable / tiers bas</span><span><i id="sw-haut"></i>Option la plus favorable / tiers haut</span></div>
+      <div class="mc-tornado dash-skeleton" id="graph-tornade" data-source="tornado"></div>
+    </div>
+  </div>
+
+  <h2 class="mc-section" id="top5">Détail des 5 meilleures simulations</h2>
+  <div class="mc-card">
+    <h2>Classement par P&amp;L</h2>
+    <p class="note">Cliquez sur une simulation pour afficher ses positions.</p>
+    <div class="mc-tablebox short">
+      <table class="mc-table" id="table-top5" data-source="top5" data-row-key="sim_id">
+        <thead><tr>
+          <th data-field="rang">Rang</th><th data-field="sim_id">Simulation</th><th data-field="mode">Calibrage</th><th data-field="famille" class="mc-hide-sm">Famille</th>
+          <th data-field="pnl_eur" class="num">P&amp;L</th><th data-field="pnl_pct" class="num mc-hide-sm">P&amp;L %</th><th data-field="dd_max_pct" class="num">Drawdown max</th>
+          <th data-field="nb_trades" class="num">Trades</th><th data-field="taux_reussite" class="num">Réussite</th><th data-field="frais_total_eur" class="num mc-hide-sm">Frais</th><th data-field="ecart_bh_eur" class="num">vs buy &amp; hold</th>
+        </tr></thead>
+        <tbody class="dash-skeleton"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="mc-card" id="carte-positions">
+    <h2 id="titre-positions">Positions</h2>
+    <div class="mc-chips" id="config"></div>
+    <div class="mc-tablebox short">
+      <table class="mc-table" id="table-positions" data-source="positions_detail" data-row-key="sim_id,actif">
+        <thead><tr>
+          <th data-field="actif">Actif</th><th data-field="lots" class="num">Lots</th><th data-field="quantite" class="num">Quantité</th>
+          <th data-field="prix_entree_moyen" class="num">Prix d’entrée moyen</th><th data-field="cours" class="num">Cours actuel</th>
+          <th data-field="cout_investi_eur" class="num">Coût investi</th><th data-field="valeur_eur" class="num">Valeur</th>
+          <th data-field="frais_achat_eur" class="num">Frais achat</th><th data-field="frais_vente_est_eur" class="num">Frais vente (est.)</th>
+          <th data-field="pnl_latent_eur" class="num">P&amp;L latent</th><th data-field="stop" class="num">Stop</th><th data-field="trailing" class="num">Trailing</th><th data-field="take_profit" class="num">Take profit</th>
+        </tr></thead>
+        <tbody class="dash-skeleton"></tbody>
+      </table>
+    </div>
+    <div class="mc-cash" id="liquidites"></div>
+    <p class="note" id="maj-cours" style="margin-bottom:0"></p>
+  </div>
+
+  <h2 class="mc-section" id="panier">Panier et buy &amp; hold</h2>
+  <div class="mc-card">
+    <h2>Buy &amp; hold à poids égaux</h2>
+    <p class="note" id="note-bh">1 000 € répartis à parts égales entre les cryptos du panier au démarrage du live, frais d’achat taker déduits ; valeur nette des frais de vente estimés. En production, le panier est lu dans CRYPTO_BASKET.</p>
+    <div class="mc-tablebox">
+      <table class="mc-table" id="table-bh" data-source="bh_detail" data-row-key="actif">
+        <thead><tr>
+          <th data-field="actif">Actif</th><th data-field="paire" class="mc-hide-sm">Paire</th><th data-field="poids" class="num">Poids</th>
+          <th data-field="prix_depart" class="num">Prix au départ</th><th data-field="cours" class="num">Cours actuel</th><th data-field="variation_pct" class="num">Variation</th>
+          <th data-field="quantite" class="num mc-hide-sm">Quantité</th><th data-field="valeur_nette_eur" class="num">Valeur nette</th><th data-field="pnl_eur" class="num">P&amp;L</th>
+        </tr></thead>
+        <tbody class="dash-skeleton"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2 class="mc-section" id="toutes">Toutes les simulations</h2>
+  <div class="mc-card">
+    <div class="mc-tools">
+      <input type="search" id="recherche" placeholder="Rechercher (famille, trailing, S-042…)" aria-label="Rechercher une simulation">
+      <div class="mc-seg" id="filtre-mode" role="group" aria-label="Calibrage">
+        <button type="button" data-v="" aria-pressed="true">Toutes</button><button type="button" data-v="Typique" aria-pressed="false">Typiques</button><button type="button" data-v="Optimisé" aria-pressed="false">Optimisées</button>
+      </div>
+      <span class="mc-count" id="compte"></span>
+    </div>
+    <div class="mc-tablebox">
+      <table class="mc-table" id="table-sims" data-source="simulations" data-row-key="sim_id">
+        <thead><tr>
+          <th data-field="sim_id"><button data-k="sim_id">Simulation</button></th>
+          <th data-field="paire" class="mc-hide-sm"><button data-k="paire">Paire</button></th>
+          <th data-field="mode"><button data-k="mode">Calibrage</button></th>
+          <th data-field="famille"><button data-k="famille">Famille</button></th>
+          <th data-field="filtre_fond" class="mc-hide-sm"><button data-k="filtre_fond">Filtre 1 j</button></th>
+          <th data-field="trailing" class="mc-hide-sm"><button data-k="trailing">Trailing</button></th>
+          <th data-field="take_profit" class="mc-hide-sm"><button data-k="take_profit">Take profit</button></th>
+          <th data-field="pnl_eur" class="num"><button data-k="pnl_eur">P&amp;L</button></th>
+          <th data-field="dd_max_pct" class="num"><button data-k="dd_max_pct">Drawdown max</button></th>
+          <th data-field="nb_trades" class="num"><button data-k="nb_trades">Trades</button></th>
+          <th data-field="taux_reussite" class="num"><button data-k="taux_reussite">Réussite</button></th>
+          <th data-field="frais_total_eur" class="num mc-hide-sm"><button data-k="frais_total_eur">Frais</button></th>
+          <th data-field="ecart_bh_eur" class="num"><button data-k="ecart_bh_eur">vs buy &amp; hold</button></th>
+        </tr></thead>
+        <tbody class="dash-skeleton"></tbody>
+      </table>
+    </div>
+  </div>
+  </section>
+
+  <section class="mc-page" id="parametres" hidden>
+    <div class="mc-card">
+      <h2>Valeurs et poids des indicateurs par simulation</h2>
+      <p class="note">Score d’entrée = somme des poids des indicateurs qui donnent un signal d’achat sur la bougie 4 h clôturée ; achat si le score atteint le seuil de la simulation et si le filtre de fond 1 j est favorable (il est bloquant, sans poids). Pour les simulations optimisées, les valeurs viennent de l’optimisation sur 70 % de l’historique, validée sur 30 % ; le point signale une valeur différente du réglage typique.</p>
+      <div class="mc-tools">
+        <input type="search" id="recherche-param" placeholder="Rechercher (S-042, ADX, Supertrend…)" aria-label="Rechercher un paramètre">
+        <div class="mc-seg" id="filtre-mode-param" role="group" aria-label="Calibrage">
+          <button type="button" data-v="" aria-pressed="true">Toutes</button><button type="button" data-v="Typique" aria-pressed="false">Typiques</button><button type="button" data-v="Optimisé" aria-pressed="false">Optimisées</button>
+        </div>
+        <select id="filtre-role" aria-label="Rôle"><option value="">Tous les rôles</option><option>Signal principal</option><option>Confirmation</option><option>Filtre de fond 1 j (bloquant)</option></select>
+        <span class="mc-count" id="compte-param"></span>
+      </div>
+      <div class="mc-tablebox">
+        <table class="mc-table" id="table-param" data-source="parametres_indicateurs" data-row-key="ligne">
+          <thead><tr>
+            <th data-field="sim_id">Simulation</th><th data-field="mode">Calibrage</th><th data-field="famille" class="mc-hide-sm">Famille</th>
+            <th data-field="role">Rôle</th><th data-field="indicateur">Indicateur</th><th data-field="parametres">Valeurs utilisées</th>
+            <th data-field="parametres_typiques" class="mc-hide-sm">Valeurs typiques</th><th data-field="poids" class="num">Poids</th><th data-field="seuil_score" class="num">Seuil du score</th>
+          </tr></thead>
+          <tbody class="dash-skeleton"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="mc-page" id="configuration" hidden>
+    <div class="mc-card" id="carte-marches">
+      <h2>Marchés du panier : historique, spread et sélection</h2>
+      <p class="note">Le filtre de fond (SMA 200) et l’optimisation 70 / 30 exigent au moins 200 jours de bougies journalières. Cochez les paires à prendre réellement en compte : par défaut, seules celles qui atteignent 200 jours le sont. Le spread est estimé à partir du carnet d’ordres Bitvavo (médiane sur 24 h) ; le coût d’un aller-retour ajoute deux fois le taux taker (0,25 %) au spread.</p>
+      <div class="mc-tools"><span class="mc-count" id="compte-marches"></span></div>
+      <div class="mc-tablebox">
+        <table class="mc-table" id="table-marches" data-source="marches_detail" data-row-key="actif">
+          <thead><tr>
+            <th>Prendre en compte</th><th data-field="actif">Actif</th><th data-field="paire" class="mc-hide-sm">Paire</th>
+            <th data-field="jours_historique" class="num">Historique 1 j</th><th data-field="historique_200j">200 jours</th>
+            <th data-field="spread_estime_pct" class="num">Spread estimé</th><th data-field="cout_aller_retour_pct" class="num">Coût aller-retour</th>
+            <th data-field="volume_24h_eur" class="num mc-hide-sm">Volume 24 h</th><th data-field="atr_4h_pct" class="num mc-hide-sm">Volatilité (ATR 4 h)</th>
+          </tr></thead>
+          <tbody class="dash-skeleton"></tbody>
+        </table>
+      </div>
+      <div class="mc-basket" id="apercu-basket"></div>
+      <button type="button" class="mc-btn primary" id="btn-valider-panier">Valider la sélection</button>
+      <div class="mc-msg" id="msg-panier"></div>
+    </div>
+
+  </section>
+</div>
+
+<script>
+dash.calc('synthese', {
+  inputs: ['simulations', 'valeur_portefeuille'],
+  title: 'Synthèse des simulations',
+  description: 'Médiane, meilleur P&L, part battant le buy & hold et écart moyen optimisé − typique par paire.',
+  fn: (simulations, valeur_portefeuille) => {
+    const p = simulations.map((s) => Number(s.pnl_eur)).sort((a, b) => a - b);
+    const n = p.length;
+    const median = n % 2 ? p[(n - 1) / 2] : (p[n / 2 - 1] + p[n / 2]) / 2;
+    const best = simulations.reduce((a, b) => (Number(b.pnl_eur) > Number(a.pnl_eur) ? b : a));
+    const bh = valeur_portefeuille.filter((r) => r.serie === 'Buy & hold').sort((a, b) => (a.date < b.date ? -1 : 1));
+    const bhPnl = Number(bh[bh.length - 1].valeur) - 1000;
+    const beat = simulations.filter((s) => Number(s.pnl_eur) > bhPnl).length;
+    const pairs = {};
+    simulations.forEach((s) => { (pairs[s.paire] = pairs[s.paire] || {})[s.mode] = Number(s.pnl_eur); });
+    const diffs = Object.values(pairs).filter((x) => x['Optimisé'] != null && x['Typique'] != null).map((x) => x['Optimisé'] - x['Typique']);
+    return [{
+      nb_simulations: n,
+      pnl_median: Math.round(median * 100) / 100,
+      pnl_moyen: Math.round(p.reduce((a, b) => a + b, 0) / n * 100) / 100,
+      pnl_meilleur: Number(best.pnl_eur),
+      meilleure_sim: best.sim_id,
+      bh_pnl: Math.round(bhPnl * 100) / 100,
+      nb_bat_bh: beat,
+      part_bat_bh: beat / n,
+      trades_moyen: Math.round(simulations.reduce((a, s) => a + Number(s.nb_trades), 0) / n * 10) / 10,
+      ecart_optimise_typique: Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length * 100) / 100,
+    }];
+  },
+});
+
+dash.calc('tornado', {
+  inputs: ['simulations'],
+  title: 'Impact des variables sur le P&L',
+  description: 'Par variable : P&L moyen de la pire et de la meilleure option, ou du tiers bas et du tiers haut, avec un test à 2 erreurs-types.',
+  fn: (simulations) => {
+    const cat = [['mode', 'Calibrage'], ['famille', 'Famille d’indicateur'], ['filtre_fond', 'Filtre de fond 1 j'], ['type_stop', 'Stop initial'], ['trailing', 'Trailing stop'], ['take_profit', 'Take profit'], ['sizing', 'Dimensionnement'], ['type_ordre', 'Type d’ordre']];
+    const num = [['expo_max_pct', 'Exposition max'], ['taille_entree_pct', 'Montant max par entrée'], ['max_par_crypto_pct', '% max par crypto'], ['hysteresis_pct', 'Marge d’hystérésis'], ['pause_apres_stop', 'Pause après stop'], ['nb_positions_max', 'Positions simultanées max']];
+    const stats = (g) => { const v = g.map((s) => Number(s.pnl_eur)); const m = v.reduce((a, b) => a + b, 0) / v.length; const sd = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / (v.length - 1)); return { m, se: sd / Math.sqrt(v.length), n: v.length }; };
+    const row = (variable, lb, lo, lh, hi) => ({ variable, libelle_bas: lb, pnl_bas: Math.round(lo.m * 100) / 100, libelle_haut: lh, pnl_haut: Math.round(hi.m * 100) / 100, amplitude: Math.round(Math.abs(hi.m - lo.m) * 100) / 100, significatif: Math.abs(hi.m - lo.m) > 2 * Math.sqrt(lo.se ** 2 + hi.se ** 2), n_bas: lo.n, n_haut: hi.n });
+    const out = [];
+    cat.forEach(([k, name]) => {
+      const groups = {};
+      simulations.forEach((s) => { (groups[s[k]] = groups[s[k]] || []).push(s); });
+      const st = Object.entries(groups).map(([lab, g]) => [lab, stats(g)]).sort((a, b) => a[1].m - b[1].m);
+      out.push(row(name, st[0][0], st[0][1], st[st.length - 1][0], st[st.length - 1][1]));
+    });
+    num.forEach(([k, name]) => {
+      const s = [...simulations].sort((a, b) => Number(a[k]) - Number(b[k]));
+      const t = Math.floor(s.length / 3);
+      const lo = s.slice(0, t), hi = s.slice(s.length - t);
+      out.push(row(name, 'Tiers bas (≤ ' + lo[lo.length - 1][k] + ')', stats(lo), 'Tiers haut (≥ ' + hi[0][k] + ')', stats(hi)));
+    });
+    return out.sort((a, b) => b.amplitude - a.amplitude);
+  },
+});
+
+dash.calc('top5', {
+  inputs: ['simulations'],
+  title: 'Top 5 par P&L',
+  description: 'Les cinq simulations au P&L le plus élevé, avec leur rang.',
+  fn: (simulations) => [...simulations].sort((a, b) => Number(b.pnl_eur) - Number(a.pnl_eur)).slice(0, 5)
+    .map((s, i) => ({ rang: i + 1, sim_id: s.sim_id, mode: s.mode, famille: s.famille, pnl_eur: Number(s.pnl_eur), pnl_pct: Number(s.pnl_pct), dd_max_pct: Number(s.dd_max_pct), nb_trades: Number(s.nb_trades), taux_reussite: Number(s.taux_reussite), frais_total_eur: Number(s.frais_total_eur), ecart_bh_eur: Number(s.ecart_bh_eur) })),
+});
+
+dash.calc('positions_detail', {
+  inputs: ['positions_top5', 'prix_courants'],
+  title: 'Positions valorisées',
+  description: 'Positions du top 5 valorisées au dernier cours, avec frais de vente estimés au taux taker et P&L latent.',
+  fn: (positions_top5, prix_courants) => positions_top5.map((p) => {
+    const cours = Number((prix_courants.find((x) => x.actif === p.actif) || {}).cours);
+    const valeur = Number(p.quantite) * cours;
+    const fv = valeur * Number(p.taux_frais_vente);
+    return { sim_id: p.sim_id, actif: p.actif, lots: Number(p.lots), quantite: Number(p.quantite), prix_entree_moyen: Number(p.prix_entree_moyen), cours,
+      cout_investi_eur: Number(p.cout_investi_eur), valeur_eur: Math.round(valeur * 100) / 100, frais_achat_eur: Number(p.frais_achat_eur), frais_vente_est_eur: Math.round(fv * 100) / 100,
+      pnl_latent_eur: Math.round((valeur - fv - Number(p.cout_investi_eur)) * 100) / 100,
+      stop: p.stop == null ? null : Number(p.stop), trailing: p.trailing == null ? null : Number(p.trailing), take_profit: p.take_profit == null ? null : Number(p.take_profit) };
+  }),
+});
+
+dash.calc('bh_detail', {
+  inputs: ['buy_and_hold', 'prix_courants'],
+  title: 'Buy & hold par actif',
+  description: 'Chaque actif du panier valorisé au dernier cours, net des frais de vente estimés au taux taker (0,25 %).',
+  fn: (buy_and_hold, prix_courants) => buy_and_hold.map((b) => {
+    const cours = Number((prix_courants.find((x) => x.actif === b.actif) || {}).cours);
+    const net = Number(b.quantite) * cours * (1 - 0.0025);
+    return { actif: b.actif, paire: b.paire, poids: Number(b.poids), prix_depart: Number(b.prix_depart), cours, variation_pct: Math.round((cours / Number(b.prix_depart) - 1) * 1000) / 10,
+      quantite: Number(b.quantite), valeur_nette_eur: Math.round(net * 100) / 100, pnl_eur: Math.round((net - Number(b.montant_alloue_eur)) * 100) / 100 };
+  }).sort((a, b) => b.pnl_eur - a.pnl_eur),
+});
+
+dash.calc('marches_detail', {
+  inputs: ['marches'],
+  title: 'Qualité des marchés du panier',
+  description: 'Historique atteint ou non (200 jours) et coût d’un aller-retour : 2 × 0,25 % de frais taker + spread estimé.',
+  fn: (marches) => marches.map((m) => ({ actif: m.actif, paire: m.paire, jours_historique: Number(m.jours_historique), historique_200j: Number(m.jours_historique) >= 200 ? 'Atteint' : 'Insuffisant',
+    spread_estime_pct: Number(m.spread_estime_pct), cout_aller_retour_pct: Math.round((0.5 + Number(m.spread_estime_pct)) * 100) / 100, volume_24h_eur: Number(m.volume_24h_eur), atr_4h_pct: Number(m.atr_4h_pct) })),
+});
+
+dash.calc('liquidites', {
+  inputs: ['simulations', 'positions_detail'],
+  title: 'Liquidités par simulation',
+  description: 'Valeur totale (1 000 € + P&L), montant en positions et liquidités restantes en euros.',
+  fn: (simulations, positions_detail) => simulations.filter((s) => positions_detail.some((p) => p.sim_id === s.sim_id)).map((s) => {
+    const total = 1000 + Number(s.pnl_eur);
+    const enPos = positions_detail.filter((p) => p.sim_id === s.sim_id).reduce((a, p) => a + p.valeur_eur, 0);
+    return { sim_id: s.sim_id, valeur_totale_eur: Math.round(total * 100) / 100, en_positions_eur: Math.round(enPos * 100) / 100, liquidites_eur: Math.round((total - enPos) * 100) / 100 };
+  }),
+});
+
+const nf2 = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const eur = (v) => nf2.format(v) + ' €';
+const seur = (v) => (v > 0 ? '+' : v < 0 ? '−' : '') + nf2.format(Math.abs(v)) + ' €';
+const pct1 = (v) => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(v) + ' %';
+const share = (v) => new Intl.NumberFormat('fr-FR', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(v);
+const SUB = '₀₁₂₃₄₅₆₇₈₉';
+const tiny = (v) => {
+  const zeros = -Math.floor(Math.log10(v)) - 1;
+  const digits = String(Math.round(v * 10 ** (zeros + 4))).replace(/0+$/, '');
+  return '0,0' + String(zeros).split('').map((c) => SUB[Number(c)]).join('') + digits;
+};
+const price = (v) => v == null ? '—' : (Math.abs(v) >= 10 ? nf2.format(v) : Math.abs(v) >= 1 ? new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 }).format(v) : Math.abs(v) >= 0.001 ? new Intl.NumberFormat('fr-FR', { maximumSignificantDigits: 4 }).format(v) : tiny(Math.abs(v))) + ' €';
+const qty = (v) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : Math.abs(v) >= 1 ? 2 : 6 }).format(v);
+const sign = (el, v) => { el.classList.toggle('mc-pos', v > 0); el.classList.toggle('mc-neg', v < 0); };
+const fail = (el) => { el.replaceChildren(); const d = document.createElement('div'); d.className = 'mc-fail'; d.textContent = 'Failed to load'; el.appendChild(d); };
+
+window.mcSel = null;
+let filtreMode = '';
+let tri = { k: 'pnl_eur', dir: -1 };
+let animDone = false;
+
+function drawKpis() {
+  const s = dash.data('synthese');
+  const set = (field, txt, v) => { document.querySelectorAll('[data-source="synthese"][data-field="' + field + '"]').forEach((el) => { el.classList.remove('dash-skeleton'); el.textContent = txt; if (v !== undefined) sign(el, v); }); };
+  const take = document.getElementById('takeaway');
+  const seuil = document.getElementById('seuil');
+  if (s.status !== 'ok' || !s.data.length) {
+    ['pnl_meilleur', 'pnl_median', 'bh_pnl', 'part_bat_bh', 'ecart_optimise_typique', 'trades_moyen', 'meilleure_sim', 'nb_bat_bh'].forEach((f) => set(f, '—'));
+    if (s.status === 'error') take.classList.remove('dash-skeleton');
+    return;
+  }
+  const r = s.data[0];
+  set('pnl_meilleur', seur(r.pnl_meilleur), r.pnl_meilleur);
+  set('meilleure_sim', r.meilleure_sim);
+  set('pnl_median', seur(r.pnl_median), r.pnl_median);
+  set('bh_pnl', seur(r.bh_pnl), r.bh_pnl);
+  set('part_bat_bh', share(r.part_bat_bh));
+  set('nb_bat_bh', r.nb_bat_bh + ' sur ' + r.nb_simulations + ' simulations');
+  set('ecart_optimise_typique', seur(r.ecart_optimise_typique), r.ecart_optimise_typique);
+  set('trades_moyen', new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 }).format(r.trades_moyen));
+  seuil.textContent = r.trades_moyen >= 10 ? 'Seuil de 10 trades atteint : tornade exploitable' : 'Résultats préliminaires (seuil : 10 trades)';
+  seuil.className = 'sub ' + (r.trades_moyen >= 10 ? 'mc-pos' : '');
+  take.classList.remove('dash-skeleton');
+  take.replaceChildren();
+  const b = (txt, field) => { const e = document.createElement('b'); e.textContent = txt; e.dataset.source = 'synthese'; e.dataset.field = field; return e; };
+  take.append(b(r.meilleure_sim, 'meilleure_sim'), ' mène avec ', b(seur(r.pnl_meilleur), 'pnl_meilleur'), '. ', b(String(r.nb_bat_bh), 'nb_bat_bh'), ' simulations battent le buy & hold (', b(seur(r.bh_pnl), 'bh_pnl'), '), et l’optimisation fait en moyenne ', b(seur(r.ecart_optimise_typique), 'ecart_optimise_typique'), ' par rapport aux fenêtres typiques.');
+}
+
+function drawValeur() {
+  if (document.getElementById('suivi').hidden) return;
+  const box = document.getElementById('graph-valeur');
+  const leg = document.getElementById('legende-valeur');
+  const d = dash.data('valeur_portefeuille');
+  const t = dash.data('top5');
+  if (d.status === 'error') { box.classList.remove('dash-skeleton'); fail(box); leg.replaceChildren(); return; }
+  if (d.status !== 'ok' || t.status !== 'ok') return;
+  box.classList.remove('dash-skeleton');
+  box.replaceChildren();
+  const order = t.data.map((x) => x.sim_id).concat(['Buy & hold']);
+  const series = order.map((name, i) => ({ name, color: name === 'Buy & hold' ? 'var(--cds-chart-reference)' : dash.colors[i], pts: d.data.filter((r) => r.serie === name).map((r) => ({ date: new Date(r.date), v: Number(r.valeur) })).sort((a, b) => a.date - b.date) })).filter((s) => s.pts.length);
+  leg.replaceChildren(...series.map((s) => { const sp = document.createElement('span'); const i = document.createElement('i'); i.style.background = s.color; sp.append(i, s.name); return sp; }));
+  const W = Math.max(280, box.clientWidth), H = 320;
+  const all = series.flatMap((s) => s.pts);
+  const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+  const y = d3.scaleLinear(d3.extent(all, (p) => p.v), [H - 28, 10]).nice();
+  const tmp = svg.append('g');
+  const yt = y.ticks(5);
+  let mw = 0;
+  yt.forEach((v) => { const tx = tmp.append('text').attr('font-size', 11).text(nf2.format(v).replace(/,00$/, '') + ' €'); mw = Math.max(mw, tx.node().getComputedTextLength()); });
+  tmp.remove();
+  const m = { l: mw + 10, r: 12 };
+  const x = d3.scaleUtc(d3.extent(all, (p) => p.date), [m.l, W - m.r]);
+  const g = svg.append('g');
+  g.selectAll('line.gy').data(yt).join('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', (v) => y(v)).attr('y2', (v) => y(v)).attr('stroke', 'var(--cds-chart-grid)');
+  g.selectAll('text.ty').data(yt).join('text').attr('x', m.l - 6).attr('y', (v) => y(v)).attr('dy', '0.32em').attr('text-anchor', 'end').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').text((v) => nf2.format(v).replace(/,00$/, '') + ' €');
+  const nt = Math.max(2, Math.min(6, Math.floor((W - m.l) / 90)));
+  const xt = x.ticks(nt);
+  g.selectAll('text.tx').data(xt).join('text').attr('x', (v) => x(v)).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').text((v) => new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(v));
+  const per = dash.data('periodes');
+  if (per.status === 'ok') {
+    const holds = per.data.filter((p) => p.type === 'Hold').map((p) => ({ a: new Date(p.debut), b: new Date(p.fin) }));
+    g.selectAll('rect.hold').data(holds).join('rect').attr('x', (h) => x(h.a)).attr('width', (h) => Math.max(1, x(h.b) - x(h.a))).attr('y', 10).attr('height', H - 38).attr('fill', 'var(--cds-chart-grid)').attr('opacity', 0.8);
+    g.selectAll('text.hold').data(holds).join('text').attr('x', (h) => (x(h.a) + x(h.b)) / 2).attr('y', 22).attr('text-anchor', 'middle').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').text('Hold');
+  }
+  g.append('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y(1000)).attr('y2', y(1000)).attr('stroke', 'var(--cds-chart-axis)').attr('stroke-dasharray', '4 4');
+  const line = d3.line().x((p) => x(p.date)).y((p) => y(p.v));
+  const paths = g.selectAll('path.s').data(series).join('path').attr('fill', 'none').attr('stroke', (s) => s.color).attr('stroke-width', 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round').attr('stroke-dasharray', (s) => s.name === 'Buy & hold' ? '5 4' : null).attr('d', (s) => line(s.pts));
+  const rule = g.append('line').attr('y1', 10).attr('y2', H - 28).attr('stroke', 'var(--cds-chart-axis)').style('display', 'none');
+  const tip = document.createElement('div'); tip.className = 'mc-tip'; box.appendChild(tip);
+  const dates = series[0].pts.map((p) => p.date);
+  svg.append('rect').attr('x', m.l).attr('y', 0).attr('width', W - m.l - m.r).attr('height', H).attr('fill', 'transparent')
+    .on('mousemove', (ev) => {
+      const [mx] = d3.pointer(ev);
+      const dt = x.invert(mx);
+      const i = d3.bisectCenter(dates.map((dd) => +dd), +dt);
+      const day = dates[i];
+      rule.style('display', null).attr('x1', x(day)).attr('x2', x(day));
+      tip.replaceChildren();
+      const h = document.createElement('div'); h.className = 'd'; h.textContent = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(day); tip.appendChild(h);
+      series.forEach((s) => { const p = s.pts.find((q) => +q.date === +day); if (!p) return; const r = document.createElement('div'); const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = s.color; r.append(sw, s.name + ' : ' + eur(p.v)); tip.appendChild(r); });
+      tip.style.display = 'block';
+      const scale = box.clientWidth / W;
+      let left = x(day) * scale + 12;
+      if (left + tip.offsetWidth > box.clientWidth) left = x(day) * scale - tip.offsetWidth - 12;
+      tip.style.left = Math.max(0, left) + 'px'; tip.style.top = '8px';
+    })
+    .on('mouseleave', () => { rule.style('display', 'none'); tip.style.display = 'none'; });
+  if (!animDone) {
+    animDone = true;
+    if (window.matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+      paths.each(function () { const L = this.getTotalLength(); d3.select(this).attr('stroke-dasharray', `${L} ${L}`).attr('stroke-dashoffset', L).transition().duration(900).ease(d3.easeCubicOut).attr('stroke-dashoffset', 0).on('end', function (s) { d3.select(this).attr('stroke-dasharray', s.name === 'Buy & hold' ? '5 4' : null); }); });
+    }
+  }
+}
+
+function drawTornado() {
+  if (document.getElementById('suivi').hidden) return;
+  const box = document.getElementById('graph-tornade');
+  document.getElementById('sw-haut').style.background = dash.colors[0];
+  const d = dash.data('tornado');
+  const s = dash.data('synthese');
+  if (d.status === 'error') { box.classList.remove('dash-skeleton'); fail(box); return; }
+  if (d.status !== 'ok' || s.status !== 'ok' || !s.data.length) return;
+  box.classList.remove('dash-skeleton');
+  box.replaceChildren();
+  const rows = d.data;
+  const mean = s.data[0].pnl_moyen;
+  const W = Math.max(280, box.clientWidth), bh = 26, top = 8, H = top + rows.length * bh + 28;
+  const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+  const tmp = svg.append('g');
+  let mw = 0;
+  rows.forEach((r) => { const tx = tmp.append('text').style('font-size', 'var(--cds-font-size-caption)').text(r.variable); mw = Math.max(mw, tx.node().getComputedTextLength()); });
+  tmp.remove();
+  const m = { l: mw + 12, r: 14 };
+  const ext = d3.extent(rows.flatMap((r) => [r.pnl_bas, r.pnl_haut]).concat([mean]));
+  const pad = (ext[1] - ext[0]) * 0.05 || 1;
+  const x = d3.scaleLinear([ext[0] - pad, ext[1] + pad], [m.l, W - m.r]);
+  const yb = d3.scaleBand(rows.map((r) => r.variable), [top, top + rows.length * bh]).padding(0.25);
+  const g = svg.append('g');
+  const xt = x.ticks(Math.max(2, Math.min(6, Math.floor((W - m.l) / 80))));
+  g.selectAll('line.gx').data(xt).join('line').attr('x1', (v) => x(v)).attr('x2', (v) => x(v)).attr('y1', top).attr('y2', top + rows.length * bh).attr('stroke', 'var(--cds-chart-grid)');
+  g.selectAll('text.tx').data(xt).join('text').attr('x', (v) => x(v)).attr('y', H - 8).attr('text-anchor', 'middle').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)').text((v) => nf2.format(v).replace(/,00$/, '') + ' €');
+  g.selectAll('text.ty').data(rows).join('text').attr('x', m.l - 8).attr('y', (r) => yb(r.variable) + yb.bandwidth() / 2).attr('dy', '0.32em').attr('text-anchor', 'end').attr('fill', 'var(--color-fg)').style('font-size', 'var(--cds-font-size-caption)').text((r) => r.variable);
+  const segs = rows.flatMap((r) => [{ r, v: r.pnl_bas, c: 'var(--cds-chart-muted)', lab: r.libelle_bas, n: r.n_bas }, { r, v: r.pnl_haut, c: dash.colors[0], lab: r.libelle_haut, n: r.n_haut }]);
+  const tip = document.createElement('div'); tip.className = 'mc-tip'; box.appendChild(tip);
+  g.selectAll('rect.b').data(segs).join('rect').attr('x', (s) => Math.min(x(s.v), x(mean))).attr('width', (s) => Math.max(1, Math.abs(x(s.v) - x(mean)))).attr('y', (s) => yb(s.r.variable)).attr('height', yb.bandwidth()).attr('rx', 3).attr('fill', (s) => s.c).attr('opacity', (s) => s.r.significatif ? 1 : 0.35)
+    .on('mousemove', (ev, s) => {
+      tip.replaceChildren();
+      const h = document.createElement('div'); h.className = 'd'; h.textContent = s.r.variable + (s.r.significatif ? '' : ' (non significatif)'); tip.appendChild(h);
+      [[s.r.libelle_bas, s.r.pnl_bas, s.r.n_bas, 'var(--cds-chart-muted)'], [s.r.libelle_haut, s.r.pnl_haut, s.r.n_haut, dash.colors[0]]].forEach(([l, v, n, c]) => { const r = document.createElement('div'); const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = c; r.append(sw, l + ' : ' + seur(v) + ' (' + n + ' sim.)'); tip.appendChild(r); });
+      tip.style.display = 'block';
+      const [px, py] = d3.pointer(ev, box);
+      let left = px + 12; if (left + tip.offsetWidth > box.clientWidth) left = px - tip.offsetWidth - 12;
+      tip.style.left = Math.max(0, left) + 'px'; tip.style.top = Math.max(0, py - tip.offsetHeight - 8) + 'px';
+    })
+    .on('mouseleave', () => { tip.style.display = 'none'; });
+  g.append('line').attr('x1', x(mean)).attr('x2', x(mean)).attr('y1', top - 4).attr('y2', top + rows.length * bh).attr('stroke', 'var(--cds-chart-reference)');
+  box.style.minHeight = H + 'px';
+}
+
+function cell(tr, txt, cls, v) { const td = document.createElement('td'); td.textContent = txt; if (cls) td.className = cls; if (v !== undefined) sign(td, v); tr.appendChild(td); return td; }
+
+function drawTop5() {
+  const tb = document.querySelector('#table-top5 tbody');
+  const d = dash.data('top5');
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); return; }
+  if (d.status !== 'ok') return;
+  tb.classList.remove('dash-skeleton');
+  if (!window.mcSel || !d.data.some((r) => r.sim_id === window.mcSel)) window.mcSel = d.data.length ? d.data[0].sim_id : null;
+  tb.replaceChildren(...d.data.map((r) => {
+    const tr = document.createElement('tr'); tr.className = 'click' + (r.sim_id === window.mcSel ? ' sel' : ''); tr.dataset.key = r.sim_id;
+    cell(tr, String(r.rang)); cell(tr, r.sim_id); cell(tr, r.mode); cell(tr, r.famille, 'mc-hide-sm');
+    cell(tr, seur(r.pnl_eur), 'num', r.pnl_eur); cell(tr, pct1(r.pnl_pct), 'num mc-hide-sm', r.pnl_pct); cell(tr, pct1(r.dd_max_pct), 'num');
+    cell(tr, String(r.nb_trades), 'num'); cell(tr, share(r.taux_reussite), 'num'); cell(tr, eur(r.frais_total_eur), 'num mc-hide-sm'); cell(tr, seur(r.ecart_bh_eur), 'num', r.ecart_bh_eur);
+    return tr;
+  }));
+}
+
+function drawPositions() {
+  const tb = document.querySelector('#table-positions tbody');
+  const d = dash.data('positions_detail');
+  const sims = dash.data('simulations');
+  const liq = dash.data('liquidites');
+  const px = dash.data('prix_courants');
+  const sel = window.mcSel;
+  document.getElementById('titre-positions').textContent = sel ? 'Positions ouvertes de ' + sel : 'Positions ouvertes';
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); return; }
+  if (d.status !== 'ok' || !sel) return;
+  tb.classList.remove('dash-skeleton');
+  const rows = d.data.filter((r) => r.sim_id === sel);
+  tb.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr'); tr.dataset.key = r.sim_id + ',' + r.actif;
+    cell(tr, r.actif); cell(tr, String(r.lots), 'num'); cell(tr, qty(r.quantite), 'num'); cell(tr, price(r.prix_entree_moyen), 'num'); cell(tr, price(r.cours), 'num');
+    cell(tr, eur(r.cout_investi_eur), 'num'); cell(tr, eur(r.valeur_eur), 'num'); cell(tr, eur(r.frais_achat_eur), 'num'); cell(tr, eur(r.frais_vente_est_eur), 'num');
+    cell(tr, seur(r.pnl_latent_eur), 'num', r.pnl_latent_eur); cell(tr, price(r.stop), 'num'); cell(tr, price(r.trailing), 'num'); cell(tr, price(r.take_profit), 'num');
+    return tr;
+  }));
+  const cfg = document.getElementById('config');
+  cfg.replaceChildren();
+  if (sims.status === 'ok') {
+    const s = sims.data.find((x) => x.sim_id === sel);
+    if (s) {
+      [['Calibrage', 'mode'], ['Famille', 'famille'], ['Filtre 1 j', 'filtre_fond'], ['Type de filtre', 'type_filtre'], ['Stop', 'type_stop'], ['Trailing', 'trailing'], ['Take profit', 'take_profit'], ['Ordres', 'type_ordre'], ['Dimensionnement', 'sizing'], ['% max par crypto', 'max_par_crypto_pct'], ['Exposition max', 'expo_max_pct'], ['Max par entrée', 'taille_entree_pct'], ['Positions max', 'nb_positions_max']].forEach(([lab, f]) => {
+        const c = document.createElement('span'); c.className = 'mc-chip';
+        const b = document.createElement('b'); b.dataset.source = 'simulations'; b.dataset.field = f; b.dataset.where = 'sim_id=' + encodeURIComponent(sel);
+        b.textContent = String(s[f]) + (f.endsWith('_pct') ? ' %' : '');
+        c.append(lab + ' : ', b); cfg.appendChild(c);
+      });
+    }
+  }
+  const lq = document.getElementById('liquidites');
+  lq.replaceChildren();
+  if (liq.status === 'ok') {
+    const l = liq.data.find((x) => x.sim_id === sel);
+    if (l) {
+      const mk = (txt, f) => { const b = document.createElement('b'); b.dataset.source = 'liquidites'; b.dataset.field = f; b.dataset.where = 'sim_id=' + encodeURIComponent(sel); b.textContent = txt; return b; };
+      lq.append('Valeur totale ', mk(eur(l.valeur_totale_eur), 'valeur_totale_eur'), ' · en positions ', mk(eur(l.en_positions_eur), 'en_positions_eur'), ' · liquidités ', mk(eur(l.liquidites_eur), 'liquidites_eur'));
+    }
+  }
+  const mj = document.getElementById('maj-cours');
+  mj.replaceChildren();
+  if (px.status === 'ok' && px.data.length) {
+    const sp = document.createElement('span'); sp.dataset.source = 'prix_courants'; sp.dataset.field = 'maj'; sp.dataset.row = '0';
+    sp.textContent = px.data[0].maj;
+    mj.append('Cours Bitvavo au ', sp, '. En production : rafraîchis chaque minute ; frais de vente estimés au taux taker de 0,25 %.');
+  }
+}
+
+function drawBh() {
+  const tb = document.querySelector('#table-bh tbody');
+  const d = dash.data('bh_detail');
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); return; }
+  if (d.status !== 'ok') return;
+  tb.classList.remove('dash-skeleton');
+  tb.replaceChildren(...d.data.map((r) => {
+    const tr = document.createElement('tr'); tr.dataset.key = r.actif;
+    cell(tr, r.actif); cell(tr, r.paire, 'mc-hide-sm'); cell(tr, share(r.poids), 'num'); cell(tr, price(r.prix_depart), 'num'); cell(tr, price(r.cours), 'num');
+    cell(tr, (r.variation_pct > 0 ? '+' : '') + pct1(r.variation_pct), 'num', r.variation_pct); cell(tr, qty(r.quantite), 'num mc-hide-sm');
+    cell(tr, eur(r.valeur_nette_eur), 'num'); cell(tr, seur(r.pnl_eur), 'num', r.pnl_eur);
+    return tr;
+  }));
+}
+
+function drawSims() {
+  const tb = document.querySelector('#table-sims tbody');
+  const d = dash.data('simulations');
+  const cnt = document.getElementById('compte');
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); cnt.textContent = ''; return; }
+  if (d.status !== 'ok') return;
+  tb.classList.remove('dash-skeleton');
+  const q = document.getElementById('recherche').value.trim().toLowerCase();
+  let rows = d.data.filter((r) => (!filtreMode || r.mode === filtreMode) && (!q || [r.sim_id, r.paire, r.mode, r.famille, r.filtre_fond, r.trailing, r.take_profit, r.type_stop].join(' ').toLowerCase().includes(q)));
+  const numeric = ['pnl_eur', 'dd_max_pct', 'nb_trades', 'taux_reussite', 'frais_total_eur', 'ecart_bh_eur'].includes(tri.k);
+  rows = [...rows].sort((a, b) => { const va = numeric ? Number(a[tri.k]) : String(a[tri.k]); const vb = numeric ? Number(b[tri.k]) : String(b[tri.k]); return (va < vb ? -1 : va > vb ? 1 : 0) * tri.dir; });
+  cnt.textContent = rows.length + ' simulation' + (rows.length > 1 ? 's' : '');
+  document.querySelectorAll('#table-sims th').forEach((th) => { const k = th.querySelector('button').dataset.k; th.setAttribute('aria-sort', k === tri.k ? (tri.dir > 0 ? 'ascending' : 'descending') : 'none'); });
+  tb.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr');
+    cell(tr, r.sim_id); cell(tr, r.paire, 'mc-hide-sm'); cell(tr, r.mode); cell(tr, r.famille); cell(tr, r.filtre_fond, 'mc-hide-sm'); cell(tr, r.trailing, 'mc-hide-sm'); cell(tr, r.take_profit, 'mc-hide-sm');
+    cell(tr, seur(Number(r.pnl_eur)), 'num', Number(r.pnl_eur)); cell(tr, pct1(Number(r.dd_max_pct)), 'num'); cell(tr, String(r.nb_trades), 'num'); cell(tr, share(Number(r.taux_reussite)), 'num');
+    cell(tr, eur(Number(r.frais_total_eur)), 'num mc-hide-sm'); cell(tr, seur(Number(r.ecart_bh_eur)), 'num', Number(r.ecart_bh_eur));
+    return tr;
+  }));
+}
+
+let ctrl = null;
+let filtreModeParam = '';
+const dtf = (iso) => new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' }).format(new Date(iso));
+
+function drawCtrl() {
+  const e = dash.data('etat_moteur');
+  const pill = document.getElementById('statut');
+  const info = document.getElementById('info-moteur');
+  if (e.status !== 'ok' || !e.data.length) { pill.textContent = '—'; return; }
+  const r = e.data[0];
+  if (!ctrl) ctrl = { statut: r.statut, optim: r.optimisation_statut };
+  const fromData = ctrl.statut === r.statut;
+  pill.textContent = ctrl.statut;
+  pill.className = 'mc-pill ' + (ctrl.statut === 'En cours' ? 'run' : ctrl.statut === 'Hold' ? 'hold' : 'idle');
+  if (fromData) { pill.dataset.source = 'etat_moteur'; pill.dataset.field = 'statut'; pill.dataset.row = '0'; } else { delete pill.dataset.source; delete pill.dataset.field; delete pill.dataset.row; }
+  info.replaceChildren();
+  const mk = (txt, f) => { const b = document.createElement('b'); b.style.fontWeight = '500'; b.textContent = txt; b.dataset.source = 'etat_moteur'; b.dataset.field = f; b.dataset.row = '0'; return b; };
+  if (ctrl.optim === 'En cours') info.append('Optimisation en cours sur l’historique (70 % / 30 %)…');
+  else if (ctrl.optim === 'Terminée' && !ctrl.optimLocal) info.append('Indicateurs optimisés pour ', mk(String(r.nb_optimisees), 'nb_optimisees'), ' simulations le ', mk(dtf(r.optimisation_le), 'optimisation_le'));
+  else if (ctrl.optim === 'Terminée') info.append('Optimisation terminée (maquette) : la moitié optimisée a été recalibrée');
+  else info.append('Optimisation à lancer');
+  if (ctrl.statut !== 'Non démarré' && fromData) info.append(' · live depuis le ', mk(dtf(r.demarre_le), 'demarre_le'), ' · ', mk(String(r.jours_actifs), 'jours_actifs'), ' j actifs, ', mk(String(r.jours_hold), 'jours_hold'), ' j de hold');
+  const bo = document.getElementById('btn-optim'), br = document.getElementById('btn-run'), bz = document.getElementById('btn-reset');
+  bo.disabled = !(ctrl.statut === 'Non démarré' && ctrl.optim !== 'En cours');
+  bo.textContent = ctrl.optim === 'Terminée' ? 'Ré-optimiser les indicateurs' : 'Optimiser les indicateurs';
+  br.textContent = ctrl.statut === 'En cours' ? 'Arrêter (passer en hold)' : ctrl.statut === 'Hold' ? 'Reprendre les simulations' : 'Lancer les simulations';
+  br.disabled = ctrl.statut === 'Non démarré' && ctrl.optim !== 'Terminée';
+  bz.disabled = ctrl.statut !== 'Hold';
+  const note = { 'En cours': 'Signaux 4 h, stops et trailing actifs. Pour remettre à zéro, arrêtez d’abord les simulations.', 'Hold': 'Hold : aucun nouvel ordre, ni signal ni stop ; les positions restent valorisées au cours Bitvavo et le P&L continue d’évoluer. Reprendre relance la gestion là où elle s’était arrêtée.', 'Non démarré': 'Remis à zéro : 1 000 € par simulation, aucune position. L’optimisation n’est possible qu’avant le lancement, pour ne jamais modifier une simulation en cours.' }[ctrl.statut];
+  document.getElementById('ctrl-note').textContent = note + ' Maquette : les boutons simulent les commandes, sans action réelle.';
+}
+
+function drawParams() {
+  if (document.getElementById('parametres').hidden) return;
+  const tb = document.querySelector('#table-param tbody');
+  const d = dash.data('parametres_indicateurs');
+  const cnt = document.getElementById('compte-param');
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); cnt.textContent = ''; return; }
+  if (d.status !== 'ok') return;
+  tb.classList.remove('dash-skeleton');
+  const q = document.getElementById('recherche-param').value.trim().toLowerCase();
+  const role = document.getElementById('filtre-role').value;
+  const rows = d.data.filter((r) => (!filtreModeParam || r.mode === filtreModeParam) && (!role || r.role === role) && (!q || [r.sim_id, r.paire, r.famille, r.indicateur, r.parametres].join(' ').toLowerCase().includes(q)));
+  cnt.textContent = rows.length + ' ligne' + (rows.length > 1 ? 's' : '');
+  const nf = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  tb.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr'); tr.dataset.key = r.ligne;
+    cell(tr, r.sim_id); cell(tr, r.mode); cell(tr, r.famille, 'mc-hide-sm'); cell(tr, r.role); cell(tr, r.indicateur);
+    cell(tr, r.parametres, r.parametres !== r.parametres_typiques ? 'diff' : ''); cell(tr, r.parametres_typiques, 'mc-hide-sm');
+    cell(tr, r.poids == null ? 'Bloquant' : nf.format(r.poids), 'num'); cell(tr, nf.format(r.seuil_score), 'num');
+    return tr;
+  }));
+}
+
+let inclus = null;
+function drawConfig() {
+  if (document.getElementById('configuration').hidden) return;
+  const tb = document.querySelector('#table-marches tbody');
+  const d = dash.data('marches_detail');
+  if (d.status === 'error') { tb.classList.remove('dash-skeleton'); tb.replaceChildren(); return; }
+  if (d.status !== 'ok') return;
+  tb.classList.remove('dash-skeleton');
+  if (!inclus) inclus = new Set(d.data.filter((m) => m.historique_200j === 'Atteint').map((m) => m.paire));
+  const compact = new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 });
+  const p2 = (v) => new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v) + ' %';
+  tb.replaceChildren(...d.data.map((m) => {
+    const tr = document.createElement('tr'); tr.dataset.key = m.actif; if (!inclus.has(m.paire)) tr.className = 'off';
+    const td = document.createElement('td'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = inclus.has(m.paire); cb.setAttribute('aria-label', 'Prendre en compte ' + m.paire);
+    cb.addEventListener('change', () => { if (cb.checked) inclus.add(m.paire); else inclus.delete(m.paire); document.getElementById('msg-panier').textContent = ''; drawConfig(); });
+    td.appendChild(cb); tr.appendChild(td);
+    cell(tr, m.actif); cell(tr, m.paire, 'mc-hide-sm'); cell(tr, m.jours_historique + ' j', 'num');
+    const h = cell(tr, m.historique_200j); h.className = m.historique_200j === 'Atteint' ? 'mc-pos' : 'mc-neg';
+    const sp = cell(tr, p2(m.spread_estime_pct), 'num'); if (m.spread_estime_pct >= 0.5) sp.classList.add('mc-neg');
+    cell(tr, p2(m.cout_aller_retour_pct), 'num'); cell(tr, compact.format(m.volume_24h_eur) + ' €', 'num mc-hide-sm'); cell(tr, p2(m.atr_4h_pct), 'num mc-hide-sm');
+    return tr;
+  }));
+  const sel = d.data.filter((m) => inclus.has(m.paire));
+  const risky = sel.filter((m) => m.historique_200j !== 'Atteint').length;
+  document.getElementById('compte-marches').textContent = sel.length + ' paire' + (sel.length > 1 ? 's' : '') + ' retenue' + (sel.length > 1 ? 's' : '') + ' sur ' + d.data.length + (risky ? ' · ' + risky + ' sans 200 jours d’historique : filtre de fond et optimisation dégradés' : '');
+  document.getElementById('apercu-basket').textContent = 'CRYPTO_BASKET=' + sel.map((m) => m.paire).join(',');
+}
+document.getElementById('btn-valider-panier').addEventListener('click', () => {
+  document.getElementById('msg-panier').textContent = 'Sélection validée (maquette, rien n’est enregistré). En production, elle s’applique au prochain lancement après une remise à zéro, jamais à des simulations en cours.';
+});
+
+function showPage(id) {
+  ['suivi', 'parametres', 'configuration'].forEach((p) => { document.getElementById(p).hidden = p !== id; document.getElementById('tab-' + p).setAttribute('aria-selected', String(p === id)); });
+  dash.setLink(id);
+  if (id === 'suivi') { drawValeur(); drawTornado(); } else if (id === 'parametres') drawParams(); else drawConfig();
+}
+document.querySelectorAll('.mc-tabs button').forEach((b) => b.addEventListener('click', () => showPage(b.dataset.page)));
+if (['parametres', 'configuration'].includes(location.hash.slice(1))) showPage(location.hash.slice(1));
+
+document.getElementById('btn-optim').addEventListener('click', () => {
+  ctrl.optim = 'En cours'; drawCtrl();
+  setTimeout(() => { ctrl.optim = 'Terminée'; ctrl.optimLocal = true; drawCtrl(); }, 2500);
+});
+document.getElementById('btn-run').addEventListener('click', () => {
+  ctrl.statut = ctrl.statut === 'En cours' ? 'Hold' : 'En cours'; drawCtrl();
+});
+document.getElementById('btn-reset').addEventListener('click', () => { document.getElementById('confirm-reset').hidden = false; document.getElementById('btn-reset').hidden = true; });
+document.getElementById('btn-reset-no').addEventListener('click', () => { document.getElementById('confirm-reset').hidden = true; document.getElementById('btn-reset').hidden = false; });
+document.getElementById('btn-reset-ok').addEventListener('click', () => {
+  document.getElementById('confirm-reset').hidden = true; document.getElementById('btn-reset').hidden = false;
+  ctrl.statut = 'Non démarré'; drawCtrl();
+});
+document.getElementById('recherche-param').addEventListener('input', drawParams);
+document.getElementById('filtre-role').addEventListener('change', drawParams);
+document.querySelectorAll('#filtre-mode-param button').forEach((b) => b.addEventListener('click', () => {
+  filtreModeParam = b.dataset.v;
+  document.querySelectorAll('#filtre-mode-param button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  drawParams();
+}));
+
+document.querySelector('#table-top5').addEventListener('click', (ev) => {
+  const tr = ev.target.closest('tr[data-key]');
+  if (!tr) return;
+  window.mcSel = tr.dataset.key;
+  drawTop5(); drawPositions();
+});
+document.getElementById('recherche').addEventListener('input', drawSims);
+document.querySelectorAll('#filtre-mode button').forEach((b) => b.addEventListener('click', () => {
+  filtreMode = b.dataset.v;
+  document.querySelectorAll('#filtre-mode button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  drawSims();
+}));
+document.querySelectorAll('#table-sims th button').forEach((b) => b.addEventListener('click', () => {
+  const k = b.dataset.k;
+  tri = tri.k === k ? { k, dir: -tri.dir } : { k, dir: ['sim_id', 'paire', 'mode', 'famille', 'filtre_fond', 'trailing', 'take_profit'].includes(k) ? 1 : -1 };
+  drawSims();
+}));
+
+dash.onData(() => {
+  drawCtrl();
+  drawParams();
+  drawConfig();
+  drawKpis();
+  drawValeur();
+  drawTornado();
+  drawTop5();
+  drawPositions();
+  drawBh();
+  drawSims();
+});
+</script>

@@ -1,0 +1,18 @@
+# Production : moteur (étape 7) et dashboard (étape 9) viendront s'ajouter ici.
+services:
+  collector:
+    build: .
+    command: ["python", "-m", "mcs.collector", "live"]
+    env_file: .env
+    environment:
+      DB_PATH: /data/mcs.sqlite
+      SQLITE_JOURNAL_MODE: WAL
+      LOG_DIR: /app/logs
+    volumes:
+      - mcs-data:/data
+      - mcs-logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  mcs-data:
+  mcs-logs:
