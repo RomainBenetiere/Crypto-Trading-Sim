@@ -243,6 +243,15 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
     - **ordre limite d'achat** : liquidités réservées au placement ; rempli **en entier, au prix limite**, frais maker, dès qu'une bougie 1 min entièrement postérieure au placement a un plus bas **strictement** inférieur ; pas de remplissage partiel ;
     - frais prélevés en € (achat : montant + frais ; vente : montant − frais), arrondis à 1e-8 € ; taux réglables dans `.env` (`FEE_MAKER`, `FEE_TAKER`), **à confirmer par l'utilisateur** ;
     - spread estimé = médiane 24 h des écarts bid / ask relevés chaque minute par le collecteur, écrite chaque heure dans `markets.spread_estimate_pct` (au moins 30 relevés).
+11. **Entrée** : le signal principal doit être en achat **et** le score doit atteindre le seuil (les confirmations seules ne déclenchent jamais d'achat).
+12. **Prix de l'ordre limite d'entrée** : meilleur bid au moment de la décision.
+13. **Dimensionnement** : % fixe → taille = montant max investi en une fois × capital ; basé sur le risque → capital × risque par trade ÷ distance relative au stop initial, plafonné par le montant max en une fois. Dans les deux cas, plafonds : % max sur une crypto, exposition totale max (positions + achats en attente), liquidités. Capital = valeur totale du portefeuille, positions valorisées nettes des frais de vente estimés.
+14. **Renforcement** : nouvelle entrée seulement si le score atteint encore le seuil et si le cours a progressé d'au moins 1R depuis la dernière entrée ; le stop de toute la position remonte alors au moins au prix d'entrée moyen. R reste celui de la première entrée.
+15. **Pause après un stop** (stop ou trailing) : seule la paire concernée est bloquée pendant N bougies 4 h.
+16. **Circuit breaker** : drawdown ≥ seuil depuis le plus haut → plus de nouvelle entrée pendant 7 jours (42 bougies 4 h), positions et stops conservés ; à la reprise, le plus haut de référence est remis à la valeur courante. Valeur et plus haut mesurés à chaque clôture 4 h.
+17. **Take profit** : ordre limite de vente posé dès l'entrée (frais maker), rempli quand une bougie 1 min a un plus haut strictement supérieur ; la quantité est bloquée et l'ordre est annulé avant toute sortie au marché. Partiel : 50 % au niveau X R, puis le reste suit le trailing (activé d'office ; sans trailing configuré, le stop remonte au prix d'entrée moyen).
+18. **Trailing Chandelier** : plus haut des 22 dernières bougies 4 h − k × ATR, k entre 2 et 4.
+19. **Choix d'implémentation (étape 4)** : ATR 4 h de période 14 pour les stops et trailings ; trailing ATR et % calculés depuis le plus haut atteint depuis l'entrée ; trailing Supertrend = ligne Supertrend des paramètres de la simulation si sa famille est Supertrend, sinon 10 / 3 ; un stop est déclenché quand le plus bas d'une bougie 1 min atteint son niveau ; sorties évaluées à chaque clôture 4 h dans l'ordre : retournement du filtre (si « bloquer et sortir »), signal inverse, durée max ; entrées classées par score décroissant.
 
 ## 14. Plan de développement proposé
 

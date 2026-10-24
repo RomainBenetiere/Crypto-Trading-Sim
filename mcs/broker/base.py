@@ -111,11 +111,29 @@ class Broker(Protocol):
     ) -> Order | Rejection:
         """Ordre limite d'achat pour au plus `quote_amount` € frais compris."""
 
+    async def place_limit_sell(
+        self,
+        sim_id: int,
+        market: str,
+        price: Decimal,
+        quantity: Decimal,
+        reason: Reason,
+        now: int,
+        expires_at: int | None = None,
+    ) -> Order | Rejection:
+        """Ordre limite de vente (take profit) ; la quantité est bloquée."""
+
     async def cancel_order(self, order_id: int, now: int) -> Order: ...
 
     def cash(self, sim_id: int) -> Decimal:
         """Liquidités disponibles (hors réservations des ordres ouverts)."""
 
+    def total_cash(self, sim_id: int) -> Decimal:
+        """Liquidités totales, réservations des ordres ouverts comprises."""
+
     def holdings(self, sim_id: int) -> dict[str, Decimal]: ...
+
+    def available_quantity(self, sim_id: int, market: str) -> Decimal:
+        """Quantité vendable (hors quantité bloquée par un ordre limite de vente)."""
 
     def open_orders(self, sim_id: int) -> list[Order]: ...

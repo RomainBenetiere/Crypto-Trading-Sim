@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -23,6 +23,9 @@ MIGRATIONS: dict[int, str] = {
         ALTER TABLE orders ADD COLUMN liquidity TEXT CHECK (liquidity IN ('maker', 'taker'));
         ALTER TABLE orders ADD COLUMN reserved TEXT;
         CREATE INDEX IF NOT EXISTS orders_open ON orders (status, market);
+    """,
+    3: """
+        ALTER TABLE positions ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}';
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

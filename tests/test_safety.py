@@ -9,7 +9,8 @@ SOURCES = [p for d in ("mcs", "dashboard") for p in (ROOT / d).rglob("*.py")]
 # Endpoints privés d'ordre / de compte de l'API Bitvavo et méthodes du SDK officiel.
 FORBIDDEN = re.compile(
     r"""["'/](order|orders|ordersOpen|cancelOrders|account|balance|withdrawal|deposit)\b["'/?]"""
-    r"""|placeOrder|cancelOrder|updateOrder|\.post\(|\.put\(|\.delete\(""",
+    r"""|placeOrder|cancelOrder|updateOrder"""
+    r"""|(client|httpx|session|requests)\.(post|put|patch|delete)\(""",
 )
 
 

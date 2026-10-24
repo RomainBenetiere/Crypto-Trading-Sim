@@ -139,7 +139,7 @@ def test_secret_redaction() -> None:
     assert record.getMessage() == "clé ***"
 
 
-def test_migration_from_v1_adds_order_columns(tmp_path: Path) -> None:
+def test_migrations_from_v1(tmp_path: Path) -> None:
     path = tmp_path / "v1.sqlite"
     conn = connect(path, JournalMode.DELETE)
     conn.executescript(
@@ -148,6 +148,7 @@ def test_migration_from_v1_adds_order_columns(tmp_path: Path) -> None:
         ALTER TABLE orders DROP COLUMN notional;
         ALTER TABLE orders DROP COLUMN liquidity;
         ALTER TABLE orders DROP COLUMN reserved;
+        ALTER TABLE positions DROP COLUMN state_json;
         PRAGMA user_version = 1;
         """
     )
@@ -155,5 +156,7 @@ def test_migration_from_v1_adds_order_columns(tmp_path: Path) -> None:
     conn = connect(path, JournalMode.DELETE)
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(orders)")}
     assert {"notional", "liquidity", "reserved"} <= columns
+    position_columns = {row["name"] for row in conn.execute("PRAGMA table_info(positions)")}
+    assert "state_json" in position_columns
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()

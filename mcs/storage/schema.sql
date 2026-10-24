@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS positions (
     stop             TEXT,
     trailing         TEXT,
     take_profit      TEXT,
+    state_json       TEXT    NOT NULL DEFAULT '{}',
     opened_at        INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL,
     UNIQUE (sim_id, market)

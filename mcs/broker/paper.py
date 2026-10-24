@@ -8,6 +8,8 @@ Règles (SPEC §5 et §13) :
   limite (frais maker) dès qu'une bougie 1 min postérieure au placement a un plus bas
   strictement inférieur au prix (le niveau doit être traversé, pas seulement touché) ;
   expiré à `expires_at` ;
+- ordre limite de vente (take profit) : quantité bloquée ; rempli au prix limite (frais maker)
+  quand une bougie 1 min postérieure a un plus haut strictement supérieur ;
 - prix au pas du marché, quantités arrondies vers le bas, minimums Bitvavo respectés.
 
 Le broker ne gère que l'argent et les quantités ; les positions (lots, stops) sont gérées
@@ -63,6 +65,20 @@ class Account:
     @property
     def available(self) -> Decimal:
         return self.cash_total - self.reserved
+
+    def reserved_quantity(self, market: str) -> Decimal:
+        """Quantité bloquée par les ordres limite de vente ouverts (take profit)."""
+        return sum(
+            (
+                o.quantity
+                for o in self.open_orders.values()
+                if o.side is Side.SELL and o.market == market
+            ),
+            Decimal(0),
+        )
+
+    def available_quantity(self, market: str) -> Decimal:
+        return self.holdings.get(market, Decimal(0)) - self.reserved_quantity(market)
 
     def apply_fill(self, order: Order) -> None:
         notional, fee = order.notional or Decimal(0), order.fee or Decimal(0)
@@ -127,8 +143,14 @@ class PaperBroker:
     def cash(self, sim_id: int) -> Decimal:
         return self.accounts[sim_id].available
 
+    def total_cash(self, sim_id: int) -> Decimal:
+        return self.accounts[sim_id].cash_total
+
     def holdings(self, sim_id: int) -> dict[str, Decimal]:
         return dict(self.accounts[sim_id].holdings)
+
+    def available_quantity(self, sim_id: int, market: str) -> Decimal:
+        return self.accounts[sim_id].available_quantity(market)
 
     def open_orders(self, sim_id: int) -> list[Order]:
         return list(self.accounts[sim_id].open_orders.values())
@@ -188,14 +210,14 @@ class PaperBroker:
         if isinstance(rules, Rejection):
             return rules
         quantity = rules.round_quantity(quantity)
-        held = account.holdings.get(market, Decimal(0))
+        held = account.available_quantity(market)
         if quantity <= 0 or quantity > held:
             return self._reject(
                 sim_id,
                 market,
                 Side.SELL,
                 RejectReason.INSUFFICIENT_QUANTITY,
-                f"{quantity} demandés, {held} détenus",
+                f"{quantity} demandés, {held} disponibles",
             )
         book = await self.books.get_book(market)
         if not book.bids:
@@ -299,8 +321,53 @@ class PaperBroker:
         )
         return order
 
+    async def place_limit_sell(
+        self,
+        sim_id: int,
+        market: str,
+        price: Decimal,
+        quantity: Decimal,
+        reason: Reason,
+        now: int,
+        expires_at: int | None = None,
+    ) -> Order | Rejection:
+        """Ordre limite de vente (take profit) : la quantité est bloquée jusqu'au remplissage
+        ou à l'annulation."""
+        account = self.accounts[sim_id]
+        rules = self._rules(sim_id, market, Side.SELL)
+        if isinstance(rules, Rejection):
+            return rules
+        limit = rules.round_price(price, Side.SELL)
+        quantity = rules.round_quantity(quantity)
+        available = account.available_quantity(market)
+        if quantity <= 0 or quantity > available:
+            return self._reject(
+                sim_id,
+                market,
+                Side.SELL,
+                RejectReason.INSUFFICIENT_QUANTITY,
+                f"{quantity} demandés, {available} disponibles",
+            )
+        if limit <= 0 or (expires_at is not None and expires_at <= now):
+            return self._reject(
+                sim_id, market, Side.SELL, RejectReason.INVALID_PRICE, f"limite {price}"
+            )
+        problem = rules.check_minimum(quantity, limit)
+        if problem:
+            return self._reject(sim_id, market, Side.SELL, *problem)
+        order = insert_order(self.conn, Order(
+            id=0, sim_id=sim_id, market=market, side=Side.SELL, order_type=OrderType.LIMIT,
+            status=OrderStatus.OPEN, reason=reason, quantity=quantity, price=limit,
+            notional=None, fee=None, liquidity=None, reserved=None, book_bid=None,
+            book_ask=None, created_at=now, expires_at=expires_at,
+        ))  # fmt: skip
+        account.open_orders[order.id] = order
+        log.info("Sim %d : limite de vente %s %s à %s.", sim_id, quantity, market, limit)
+        return order
+
     def on_candle(self, candle: Candle) -> list[Order]:
-        """Remplit les ordres limite d'achat traversés par une bougie 1 min."""
+        """Remplit les ordres limite traversés par une bougie 1 min (achat : plus bas
+        strictement sous la limite ; vente : plus haut strictement au-dessus)."""
         if candle.interval != "1m":
             raise ValueError("Les ordres limite sont évalués sur les bougies 1 min.")
         filled = []
@@ -313,7 +380,12 @@ class PaperBroker:
                     continue
                 if order.expires_at is not None and candle.ts >= order.expires_at:
                     continue
-                if candle.low < order.price:
+                crossed = (
+                    candle.low < order.price
+                    if order.side is Side.BUY
+                    else candle.high > order.price
+                )
+                if crossed:
                     filled.append(self._fill_limit(account, order, candle))
         return filled
 
@@ -395,12 +467,14 @@ class PaperBroker:
         del account.open_orders[order.id]
         account.apply_fill(filled)
         log.info(
-            "Sim %d : limite %s %s remplie à %s (plus bas 1 min %s), frais %s €.",
+            "Sim %d : limite %s %s %s remplie à %s (bougie 1 min %s-%s), frais %s €.",
             account.sim_id,
+            order.side,
             order.quantity,
             order.market,
             order.price,
             candle.low,
+            candle.high,
             filled.fee,
         )
         return filled
