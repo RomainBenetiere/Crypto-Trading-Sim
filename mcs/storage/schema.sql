@@ -71,7 +71,10 @@ CREATE TABLE IF NOT EXISTS orders (
     status        TEXT    NOT NULL CHECK (status IN ('open', 'filled', 'cancelled', 'expired')),
     price         TEXT,
     quantity      TEXT    NOT NULL,
+    notional      TEXT,
     fee           TEXT,
+    liquidity     TEXT    CHECK (liquidity IN ('maker', 'taker')),
+    reserved      TEXT,
     reason        TEXT    NOT NULL CHECK (reason IN (
                       'signal', 'stop', 'trailing', 'take_profit', 'reverse_signal',
                       'max_duration', 'trend_filter', 'circuit_breaker')),
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS orders_sim ON orders (sim_id, created_at);
+CREATE INDEX IF NOT EXISTS orders_open ON orders (status, market);
 
 CREATE TABLE IF NOT EXISTS positions (
     id               INTEGER PRIMARY KEY,

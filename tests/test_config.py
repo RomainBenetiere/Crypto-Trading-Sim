@@ -57,3 +57,20 @@ def test_environment_overrides_env_file(tmp_path: Path, monkeypatch: pytest.Monk
     settings = load_settings(env, base_dir=tmp_path)
     assert settings.db_path == Path("/data/mcs.sqlite")
     assert settings.basket == ("BTC-EUR",)
+
+
+def test_fee_rates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from decimal import Decimal
+
+    from mcs.config import parse_fee
+
+    monkeypatch.delenv("FEE_MAKER", raising=False)
+    monkeypatch.setenv("FEE_TAKER", "0.002")
+    env = tmp_path / ".env"
+    env.write_text("CRYPTO_BASKET=BTC-EUR\nFEE_MAKER=0.001\n")
+    settings = load_settings(env, base_dir=tmp_path)
+    assert (settings.fee_maker, settings.fee_taker) == (Decimal("0.001"), Decimal("0.002"))
+    assert parse_fee(None, Decimal("0.0025"), "FEE_TAKER") == Decimal("0.0025")
+    for bad in ("0,25", "0.25", "-0.001"):
+        with pytest.raises(ConfigError):
+            parse_fee(bad, Decimal("0.0025"), "FEE_TAKER")

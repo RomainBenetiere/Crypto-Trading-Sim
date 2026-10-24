@@ -24,11 +24,13 @@ from mcs.bitvavo.ws import BitvavoWebSocket
 from mcs.config import Settings, load_settings
 from mcs.logging_setup import configure_logging
 from mcs.market_data import INTERVAL_MS, INTERVALS, MINUTE_MS, aggregate, floor_ts
+from mcs.spread import SpreadTracker
 from mcs.storage.candles import load_candles, ts_bounds, upsert_candles
 from mcs.storage.db import connect, now_ms
 from mcs.storage.markets import (
     LatestPrice,
     update_market_stats,
+    update_spread_estimate,
     upsert_latest_prices,
     upsert_market_info,
 )
@@ -41,6 +43,10 @@ BACKFILL_ORDER = ("1d", "4h", "1h", "1m")
 MINUTE_DELAY_MS = 3_000  # laisse à Bitvavo le temps de finaliser la bougie qui vient de clore
 TICKER_STALE_MS = 120_000
 MARKETS_REFRESH_MS = DAY_MS
+SPREAD_UPDATE_MS = INTERVAL_MS["1h"]
+SPREAD_MIN_SAMPLES = (
+    30  # après un redémarrage, ne pas écraser l'estimation avec trop peu de relevés
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +178,8 @@ class LiveCollector:
         self.ws = BitvavoWebSocket(self.basket, on_reconnect=self._on_reconnect)
         self._synced_end: dict[tuple[str, str], int] = {}
         self._markets_refreshed_at = 0
+        self.spreads = SpreadTracker()
+        self._spreads_written_at = 0
 
     async def _on_reconnect(self, downtime_s: float) -> None:
         # Le rattrapage REST du prochain tick comble les bougies manquées pendant la coupure.
@@ -207,6 +215,15 @@ class LiveCollector:
                             "; ".join(differences),
                         )
         await self.write_latest_prices(now)
+        if now - self._spreads_written_at >= SPREAD_UPDATE_MS:
+            self.write_spreads(now)
+
+    def write_spreads(self, now: int) -> None:
+        for market in self.basket:
+            spread = self.spreads.median_pct(market)
+            if spread is not None and self.spreads.count(market) >= SPREAD_MIN_SAMPLES:
+                update_spread_estimate(self.conn, market, spread)
+        self._spreads_written_at = now
 
     async def write_latest_prices(self, now: int) -> None:
         prices = []
@@ -216,11 +233,15 @@ class LiveCollector:
                 prices.append(
                     LatestPrice(market, state.last_price, state.best_bid, state.best_ask, now)
                 )
-                continue
-            ticker = await self.rest.get_ticker_24h(market)
-            price = ticker.last or _mid(ticker.bid, ticker.ask)
-            if price is not None:
-                prices.append(LatestPrice(market, price, ticker.bid, ticker.ask, now))
+                bid, ask = state.best_bid, state.best_ask
+            else:
+                ticker = await self.rest.get_ticker_24h(market)
+                price = ticker.last or _mid(ticker.bid, ticker.ask)
+                if price is not None:
+                    prices.append(LatestPrice(market, price, ticker.bid, ticker.ask, now))
+                bid, ask = ticker.bid, ticker.ask
+            if bid is not None and ask is not None:
+                self.spreads.record(market, bid, ask, now)
         upsert_latest_prices(self.conn, prices)
 
     async def run(self) -> None:

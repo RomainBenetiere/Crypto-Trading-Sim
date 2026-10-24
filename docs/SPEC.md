@@ -124,6 +124,8 @@ BITVAVO_API_SECRET=
 DB_PATH=data/mcs.sqlite
 SQLITE_JOURNAL_MODE=DELETE  # WAL (défaut, production) ; DELETE sur le partage SMB du NAS
 LOG_DIR=logs
+FEE_MAKER=0.0015             # frais en fraction, selon le palier Bitvavo de l'utilisateur
+FEE_TAKER=0.0025
 ```
 
 - `CRYPTO_BASKET` est la liste candidate. La sélection effective est validée dans le dashboard (onglet « Marchés du panier »), stockée en base, et ne s'applique qu'au prochain lancement après une remise à zéro.
@@ -235,6 +237,12 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
 7. **Hystérésis du filtre de fond** : bande symétrique. Écart = prix / SMA − 1, EMA rapide / EMA lente − 1, ou ROC / 100 ; favorable au-dessus de +marge, défavorable sous −marge, état conservé entre les deux ; défavorable tant que l'indicateur n'est pas calculable.
 8. **Bougies manquantes** (aucune transaction, panne Bitvavo) : comblées pour les indicateurs avec O = H = L = C = clôture précédente et volume 0.
 9. **Implémentation des indicateurs** : code maison pandas/numpy (pas de pandas-ta) avec les conventions de TA-Lib, qui sert de référence dans les tests seulement. Une paire est exclue des signaux tant qu'elle n'a pas l'historique minimal (`warmup`) de chaque indicateur de la simulation.
+10. **Exécution simulée (étape 3)** :
+    - ordre au marché : parcours du carnet réel (profondeur 1 000, cache de 2 s par paire), prix moyen pondéré, frais taker ; carnet insuffisant : reste exécuté au dernier niveau, alerte journalisée ;
+    - **stop ou trailing déclenché** : prix de vente dégradé en plus **d'un spread médian 24 h** de la paire (à défaut, spread instantané du carnet) ;
+    - **ordre limite d'achat** : liquidités réservées au placement ; rempli **en entier, au prix limite**, frais maker, dès qu'une bougie 1 min entièrement postérieure au placement a un plus bas **strictement** inférieur ; pas de remplissage partiel ;
+    - frais prélevés en € (achat : montant + frais ; vente : montant − frais), arrondis à 1e-8 € ; taux réglables dans `.env` (`FEE_MAKER`, `FEE_TAKER`), **à confirmer par l'utilisateur** ;
+    - spread estimé = médiane 24 h des écarts bid / ask relevés chaque minute par le collecteur, écrite chaque heure dans `markets.spread_estimate_pct` (au moins 30 relevés).
 
 ## 14. Plan de développement proposé
 

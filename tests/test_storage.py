@@ -137,3 +137,23 @@ def test_secret_redaction() -> None:
     record = logging.LogRecord("x", logging.INFO, "", 0, "clé %s", ("abc123",), None)
     SecretRedactingFilter(["abc123"]).filter(record)
     assert record.getMessage() == "clé ***"
+
+
+def test_migration_from_v1_adds_order_columns(tmp_path: Path) -> None:
+    path = tmp_path / "v1.sqlite"
+    conn = connect(path, JournalMode.DELETE)
+    conn.executescript(
+        """
+        DROP INDEX orders_open;
+        ALTER TABLE orders DROP COLUMN notional;
+        ALTER TABLE orders DROP COLUMN liquidity;
+        ALTER TABLE orders DROP COLUMN reserved;
+        PRAGMA user_version = 1;
+        """
+    )
+    conn.close()
+    conn = connect(path, JournalMode.DELETE)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(orders)")}
+    assert {"notional", "liquidity", "reserved"} <= columns
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    conn.close()

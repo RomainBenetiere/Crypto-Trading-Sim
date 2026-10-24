@@ -122,6 +122,13 @@ def update_market_stats(
         )
 
 
+def update_spread_estimate(conn: sqlite3.Connection, market: str, spread_pct: Decimal) -> None:
+    conn.execute(
+        "UPDATE markets SET spread_estimate_pct = ?, updated_at = ? WHERE market = ?",
+        (spread_pct, now_ms(), market),
+    )
+
+
 def basket_markets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM markets WHERE in_basket = 1 ORDER BY market").fetchall()
 

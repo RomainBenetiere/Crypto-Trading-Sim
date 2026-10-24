@@ -15,7 +15,16 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
+MIGRATIONS: dict[int, str] = {
+    2: """
+        ALTER TABLE orders ADD COLUMN notional TEXT;
+        ALTER TABLE orders ADD COLUMN liquidity TEXT CHECK (liquidity IN ('maker', 'taker'));
+        ALTER TABLE orders ADD COLUMN reserved TEXT;
+        CREATE INDEX IF NOT EXISTS orders_open ON orders (status, market);
+    """,
+}
 BUSY_TIMEOUT_MS = 30_000
 NETWORK_FILESYSTEMS = frozenset(
     {"smbfs", "cifs", "smb3", "nfs", "nfs4", "afpfs", "webdav", "fuse.sshfs", "9p"}
@@ -59,7 +68,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     if version == SCHEMA_VERSION:
         return
-    script = resources.files("mcs.storage").joinpath("schema.sql").read_text(encoding="utf-8")
+    if version == 0:
+        script = resources.files("mcs.storage").joinpath("schema.sql").read_text(encoding="utf-8")
+    else:
+        script = "\n".join(MIGRATIONS[v] for v in range(version + 1, SCHEMA_VERSION + 1))
     try:
         conn.executescript(
             f"""

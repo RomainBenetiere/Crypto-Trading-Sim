@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from dotenv import dotenv_values
 PAIR_PATTERN = re.compile(r"^[A-Z0-9]{1,20}-EUR$")
 DEFAULT_DB_PATH = "data/mcs.sqlite"
 DEFAULT_LOG_DIR = "logs"
+# Grille Bitvavo, palier < 100 000 €/mois (à confirmer par l'utilisateur, SPEC §5).
+DEFAULT_FEE_MAKER = Decimal("0.0015")
+DEFAULT_FEE_TAKER = Decimal("0.0025")
 
 
 class ConfigError(ValueError):
@@ -30,6 +34,8 @@ class Settings:
     db_path: Path
     journal_mode: JournalMode
     log_dir: Path
+    fee_maker: Decimal = DEFAULT_FEE_MAKER
+    fee_taker: Decimal = DEFAULT_FEE_TAKER
     # Secrets : jamais affichés (repr=False) ni journalisés.
     api_key: str | None = field(default=None, repr=False)
     api_secret: str | None = field(default=None, repr=False)
@@ -65,6 +71,20 @@ def parse_journal_mode(raw: str | None) -> JournalMode:
         ) from exc
 
 
+def parse_fee(raw: str | None, default: Decimal, name: str) -> Decimal:
+    """Taux de frais en fraction (0.0025 = 0,25 %)."""
+    value = _blank_to_none(raw)
+    if value is None:
+        return default
+    try:
+        rate = Decimal(value)
+    except InvalidOperation as exc:
+        raise ConfigError(f"{name} invalide : {raw!r} (ex. 0.0025 pour 0,25 %).") from exc
+    if not Decimal(0) <= rate < Decimal("0.01"):
+        raise ConfigError(f"{name} hors limites : {rate} (fraction attendue, ex. 0.0025).")
+    return rate
+
+
 def _blank_to_none(value: str | None) -> str | None:
     if value is None:
         return None
@@ -94,6 +114,8 @@ def load_settings(env_file: Path | str | None = ".env", base_dir: Path | None = 
         db_path=resolve(values.get("DB_PATH"), DEFAULT_DB_PATH),
         journal_mode=parse_journal_mode(values.get("SQLITE_JOURNAL_MODE")),
         log_dir=resolve(values.get("LOG_DIR"), DEFAULT_LOG_DIR),
+        fee_maker=parse_fee(values.get("FEE_MAKER"), DEFAULT_FEE_MAKER, "FEE_MAKER"),
+        fee_taker=parse_fee(values.get("FEE_TAKER"), DEFAULT_FEE_TAKER, "FEE_TAKER"),
         api_key=_blank_to_none(values.get("BITVAVO_API_KEY")),
         api_secret=_blank_to_none(values.get("BITVAVO_API_SECRET")),
     )
@@ -105,6 +127,8 @@ _KEYS = frozenset(
         "DB_PATH",
         "SQLITE_JOURNAL_MODE",
         "LOG_DIR",
+        "FEE_MAKER",
+        "FEE_TAKER",
         "BITVAVO_API_KEY",
         "BITVAVO_API_SECRET",
     }
