@@ -22,6 +22,7 @@ dev = [
     "respx>=0.21",
     "ruff>=0.6",
     "mypy>=1.11",
+    "ta-lib>=0.6",  # référence pour les tests des indicateurs uniquement
 ]
 
 [tool.setuptools.packages.find]
@@ -36,6 +37,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# Typographie française dans les docstrings et commentaires.
+allowed-confusables = ["−", "×"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

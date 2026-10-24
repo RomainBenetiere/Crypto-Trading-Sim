@@ -231,6 +231,10 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
    - développement : Python sur le Mac, code **et base SQLite sur le partage SMB du NAS** (pas de base sur le disque local du Mac). WAL n'étant pas fiable sur un partage réseau, la base y tourne en journal classique (`SQLITE_JOURNAL_MODE=DELETE`) ;
    - production : conteneur **Docker sur un serveur Proxmox**, base sur un volume local, `SQLITE_JOURNAL_MODE=WAL`.
 5. **Profondeur d'historique** : tout l'historique disponible en 1 j, 4 h et 1 h ; **90 jours en 1 min** (puis collecte continue). Les stops de l'optimisation sont simulés en 1 h, les 90 jours en 1 min servent à contrôler cette approximation.
+6. **Signaux = états** (étape 2) : un indicateur apporte son poids tant que sa condition d'achat est vraie (EMA rapide > lente, MACD > signal, Supertrend haussier ; confirmations ADX > seuil avec +DI > −DI, volume relatif ≥ multiple, RSI < seuil). Exception : la cassure Donchian n'est vraie que sur les bougies qui clôturent au-dessus du plus haut des N bougies précédentes. Le signal inverse (sortie) est l'état opposé (Donchian : clôture sous le plus bas des N précédentes).
+7. **Hystérésis du filtre de fond** : bande symétrique. Écart = prix / SMA − 1, EMA rapide / EMA lente − 1, ou ROC / 100 ; favorable au-dessus de +marge, défavorable sous −marge, état conservé entre les deux ; défavorable tant que l'indicateur n'est pas calculable.
+8. **Bougies manquantes** (aucune transaction, panne Bitvavo) : comblées pour les indicateurs avec O = H = L = C = clôture précédente et volume 0.
+9. **Implémentation des indicateurs** : code maison pandas/numpy (pas de pandas-ta) avec les conventions de TA-Lib, qui sert de référence dans les tests seulement. Une paire est exclue des signaux tant qu'elle n'a pas l'historique minimal (`warmup`) de chaque indicateur de la simulation.
 
 ## 14. Plan de développement proposé
 
