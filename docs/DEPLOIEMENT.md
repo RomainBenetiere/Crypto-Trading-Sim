@@ -21,14 +21,18 @@ Créer `.env` à partir de `.env.example` (le panier, les frais ; la clé API re
 ## 2. Reprendre la base du développement
 
 La base du NAS contient déjà l'historique des bougies, le plan des 300 simulations et
-l'optimisation. Moteur arrêté des deux côtés, copier le fichier :
+l'optimisation. Aucun moteur ne doit écrire dedans pendant la copie. Le serveur la
+télécharge directement depuis le partage SMB du NAS (sans montage, ce qui fonctionne aussi
+dans un conteneur LXC non privilégié) ; remplacer `IP_DU_NAS` par l'adresse du NAS :
 
 ```bash
-scp utilisateur@mac:/Volumes/home/Github/Crypto-Trading-Sim/data/mcs.sqlite data/mcs.sqlite
-sudo chown 1000:1000 data/mcs.sqlite
+apt update && apt install -y smbclient
+smbclient //IP_DU_NAS/home -U RomainB -c 'get Github/Crypto-Trading-Sim/data/mcs.sqlite data/mcs.sqlite'
+chown -R 1000:1000 data logs && ls -la data
 ```
 
-Le moteur passe la base en WAL au premier démarrage. Ne plus utiliser la copie du NAS ensuite.
+Les commandes s'exécutent depuis le dossier du projet (`cd ~/Crypto-Trading-Sim`). Le moteur
+passe la base en WAL au premier démarrage. Ne plus utiliser la copie du NAS ensuite.
 
 ## 3. Démarrer
 
