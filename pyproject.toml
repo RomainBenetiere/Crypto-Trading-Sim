@@ -16,6 +16,7 @@ dependencies = [
     "scipy>=1.15",
     "streamlit>=1.40",
     "plotly>=5.24",
+    "tzdata>=2024.1",  # fuseau Europe/Paris dans les images Docker minimales
 ]
 
 [project.optional-dependencies]

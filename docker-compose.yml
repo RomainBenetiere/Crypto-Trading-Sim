@@ -1,39 +1,32 @@
-# Production (conteneurs Docker sur le serveur Proxmox).
+# Production : conteneurs Docker sur le serveur Proxmox (voir docs/DEPLOIEMENT.md).
+# Base et journaux sur le disque local du serveur (./data, ./logs), jamais sur un partage
+# réseau : SQLite y tourne en WAL, partagé par le moteur et le dashboard.
+x-common: &common
+  build: .
+  env_file: .env
+  environment:
+    DB_PATH: /data/mcs.sqlite
+    SQLITE_JOURNAL_MODE: WAL
+    LOG_DIR: /app/logs
+    TZ: Europe/Paris
+  volumes:
+    - ./data:/data
+    - ./logs:/app/logs
+  restart: unless-stopped
+
 services:
   engine:
-    build: .
+    <<: *common
     command: ["python", "-m", "mcs.engine"]
-    env_file: .env
-    environment:
-      DB_PATH: /data/mcs.sqlite
-      SQLITE_JOURNAL_MODE: WAL
-      LOG_DIR: /app/logs
-    volumes:
-      - mcs-data:/data
-      - mcs-logs:/app/logs
-    restart: unless-stopped
     stop_grace_period: 30s
 
   dashboard:
-    build: .
+    <<: *common
     command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
               "--server.port=8501", "--server.headless=true",
               "--browser.gatherUsageStats=false"]
-    env_file: .env
-    environment:
-      DB_PATH: /data/mcs.sqlite
-      SQLITE_JOURNAL_MODE: WAL
-      LOG_DIR: /app/logs
-    volumes:
-      - mcs-data:/data
-      - mcs-logs:/app/logs
     # Réseau local uniquement (décision 35) : ne pas exposer ce port à Internet.
     ports:
       - "8501:8501"
     depends_on:
       - engine
-    restart: unless-stopped
-
-volumes:
-  mcs-data:
-  mcs-logs:

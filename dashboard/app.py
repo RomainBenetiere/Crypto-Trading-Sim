@@ -24,6 +24,7 @@ import streamlit as st  # noqa: E402
 
 from dashboard import fmt, queries  # noqa: E402
 from mcs.config import Settings, load_settings  # noqa: E402
+from mcs.health import Level, run_checks  # noqa: E402
 from mcs.live.state import Command  # noqa: E402
 from mcs.metrics import (  # noqa: E402
     buy_and_hold_detail,
@@ -645,6 +646,24 @@ def tab_markets() -> None:
         )
 
 
+# --- Santé du moteur -----------------------------------------------------------------------
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def health_checks() -> list[Any]:
+    return run_checks(ro(), settings().log_dir, hours=72)
+
+
+def health_panel() -> None:
+    checks = health_checks()
+    worst = max((c.level for c in checks), key=[Level.OK, Level.WARN, Level.FAIL].index)
+    icon = {Level.OK: "✅", Level.WARN: "⚠️", Level.FAIL: "❌"}
+    with st.expander(f"{icon[worst]} Santé du moteur (72 dernières heures) : {worst.value}"):
+        for check in checks:
+            st.markdown(f"{icon[check.level]} **{check.section} · {check.name}** : {check.detail}")
+        st.caption("Rapport complet : `python -m mcs.health`. Recalculé chaque minute.")
+
+
 # --- Page -----------------------------------------------------------------------------------
 
 
@@ -655,6 +674,7 @@ def main() -> None:
         "optimisé), départ à 1 000 € chacune. Aucun ordre réel."
     )
     control_bar()
+    health_panel()
     follow, indicators, markets = st.tabs(
         ["Suivi des simulations", "Paramètres des indicateurs", "Marchés du panier"]
     )

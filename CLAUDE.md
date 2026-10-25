@@ -4,7 +4,7 @@
 
 Un moteur Python qui fait tourner en parallèle 300 simulations de stratégies de trading crypto en paper trading live, sur des données de marché réelles Bitvavo, avec un dashboard de suivi. Le but est de comparer des configurations (indicateurs, stops, règles de portefeuille) et d'identifier les variables qui influencent le plus le P&L.
 
-La spécification complète est dans `docs/SPEC.md`. Lis-la entièrement avant d'écrire du code. La maquette validée du dashboard est dans `docs/maquette/` (voir `docs/maquette/LISEZMOI.md`).
+La spécification complète est dans `docs/SPEC.md`. Lis-la entièrement avant d'écrire du code. La maquette validée du dashboard est dans `docs/maquette/` (voir `docs/maquette/LISEZMOI.md`). Déploiement et rodage : `docs/DEPLOIEMENT.md`.
 
 ## Règles absolues
 
@@ -34,4 +34,6 @@ python -m mcs.sampling generate         # plan Monte-Carlo (--seed N, --force)
 python -m mcs.optimizer run --workers 8  # optimisation 70/30 des jumelles optimisées
 python -m mcs.engine                     # moteur live (collecte + 300 simulations + commandes)
 streamlit run dashboard/app.py
+python -m mcs.health --hours 72          # rapport de santé (rodage)
+python -m mcs.control status             # pilotage sans dashboard (start, stop, resume, reset --yes…)
 ```
