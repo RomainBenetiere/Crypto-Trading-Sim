@@ -187,7 +187,8 @@ Les 300 simulations partagent **un seul** flux de données ; chaque bougie ou ti
 | `metrics` | sim_id, P&L, drawdown max, trades, réussite, frais, écart buy & hold | chaque heure |
 | `buy_and_hold` | paire, poids, montant alloué, frais, prix de départ, quantité | au lancement |
 | `engine_state` | statut, statut d'optimisation, dates, durées actives et en hold | à chaque changement |
-| `run_periods` | début, fin, type (actif / hold) | à chaque changement d'état |
+| `run_periods` | début, fin, type (actif / hold / interruption) | à chaque changement d'état |
+| `sim_state` | sim_id, pause après stop, circuit breaker, plus haut, P&L des trades | à chaque clôture 4 h et sortie |
 | `commands` | commande, demandée le, traitée le, résultat | dashboard → moteur |
 
 La valeur à la minute du top 5 est calculée à la volée (positions × derniers prix), pas stockée.
@@ -265,6 +266,15 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
 25. **Période** : tout l'historique (mars 2019 → aujourd'hui), coupé à 70 % du temps, aligné sur les bougies 4 h ; la validation repart de 1 000 € à la coupure, indicateurs initialisés par l'historique antérieur. La règle des 200 jours s'applique à chaque date.
 26. **Exécution historique** : ordre au marché au dernier cours 1 h ± un demi-spread estimé (médiane actuelle de la paire, 0,1 % à défaut), frais taker ; stop au niveau du stop, ou à l'ouverture de l'heure si elle est dessous, moins un spread ; limite et take profit remplis si le plus bas / plus haut 1 h traverse strictement ; stop vérifié avant le take profit dans la même heure. Minimums et arrondis de chaque marché respectés (une position valant moins de 5 € ne peut pas être vendue, comme sur Bitvavo).
 27. **Mise en œuvre** (`python -m mcs.optimizer run [--workers N] [--trials 40] [--only ID…] [--force]`) : backtest avec la même classe `Simulation` que le live, déroulé heure par heure ; indicateurs précalculés sur tout l'historique et lus à la dernière bougie clôturée (un test vérifie qu'un historique tronqué donne les mêmes décisions) ; calcul parallèle, reprise des simulations non traitées après interruption ; statut `TODO` → `RUNNING` → `DONE` dans `engine_state`.
+28. **Hold** : les entrées en attente sont annulées ; les take profit sont annulés puis re-posés au même niveau à la reprise. Aucun ordre ne s'exécute pendant le Hold ; les valeurs des portefeuilles continuent d'être écrites.
+29. **Coupure non prévue** (plantage, redémarrage, réseau) : à la relance, la période depuis le dernier signe de vie (> 5 min) est enregistrée comme `outage` dans `run_periods` (grisée comme un Hold) ; aucune décision n'est rejouée ; les stops franchis pendant la coupure s'exécutent au cours du moment.
+30. **Optimiser** depuis le dashboard : le moteur lance `python -m mcs.optimizer run --workers N` dans un processus séparé (`OPTIMIZER_WORKERS` dans `.env`, 4 par défaut) ; la collecte continue.
+31. **Un seul processus** : le moteur (`python -m mcs.engine`) intègre la collecte (un seul WebSocket partagé par les 300 simulations) ; `collector live` reste utilisable seul.
+32. **Mise en œuvre du moteur (étape 7)** :
+    - bougie 1 min WebSocket (en cours) : stops des simulations qui détiennent la paire, puis ordres limite ; chaque minute : expiration des ordres limite et signe de vie (`engine_state.heartbeat_at`) ; clôture 1 h : nouvelles bougies chargées, trailing horaire, valeurs écrites dans `portfolio_values` ; clôture 4 h : indicateurs précalculés dans un thread puis sorties, trailings et entrées des 300 simulations (≈ 20 s mesurées) ;
+    - « Lancer » fige le panier (`engine_state.basket_json`) et achète le buy & hold au carnet réel ; « Remettre à zéro » vide ordres, positions, valeurs, métriques, buy & hold, périodes et `sim_state`, et conserve les configurations (y compris optimisées) ;
+    - redémarrage : comptes reconstitués à partir des ordres, positions depuis `positions`, pause / circuit breaker / plus haut / P&L des trades depuis la table `sim_state` ;
+    - production : service `engine` dans `docker-compose.yml`.
 
 ## 14. Plan de développement proposé
 

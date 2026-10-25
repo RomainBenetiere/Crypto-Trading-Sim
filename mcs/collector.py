@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from mcs.bitvavo.rest import BitvavoRest
-from mcs.bitvavo.ws import BitvavoWebSocket
+from mcs.bitvavo.ws import BitvavoWebSocket, CandleHandler
 from mcs.config import Settings, load_settings
 from mcs.logging_setup import configure_logging
 from mcs.market_data import INTERVAL_MS, INTERVALS, MINUTE_MS, aggregate, floor_ts
@@ -172,10 +172,13 @@ class LiveCollector:
         rest: BitvavoRest,
         basket: Sequence[str],
         minute_days: int = DEFAULT_MINUTE_DAYS,
+        on_candle: CandleHandler | None = None,
     ) -> None:
         self.conn, self.rest, self.basket = conn, rest, list(basket)
         self.minute_days = minute_days
-        self.ws = BitvavoWebSocket(self.basket, on_reconnect=self._on_reconnect)
+        self.ws = BitvavoWebSocket(
+            self.basket, on_candle=on_candle, on_reconnect=self._on_reconnect
+        )
         self._synced_end: dict[tuple[str, str], int] = {}
         self._markets_refreshed_at = 0
         self.spreads = SpreadTracker()

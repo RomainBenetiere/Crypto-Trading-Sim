@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "engine_state",
     "run_periods",
     "commands",
+    "sim_state",
 }
 
 
@@ -151,6 +152,9 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE positions DROP COLUMN state_json;
         ALTER TABLE simulations DROP COLUMN draw_json;
         ALTER TABLE simulations DROP COLUMN train_score;
+        ALTER TABLE engine_state DROP COLUMN basket_json;
+        ALTER TABLE engine_state DROP COLUMN heartbeat_at;
+        DROP TABLE sim_state;
         ALTER TABLE engine_state DROP COLUMN master_seed;
         PRAGMA user_version = 1;
         """

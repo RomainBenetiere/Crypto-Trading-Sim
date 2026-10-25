@@ -8,7 +8,7 @@ SOURCES = [p for d in ("mcs", "dashboard") for p in (ROOT / d).rglob("*.py")]
 
 # Endpoints privés d'ordre / de compte de l'API Bitvavo et méthodes du SDK officiel.
 FORBIDDEN = re.compile(
-    r"""["'/](order|orders|ordersOpen|cancelOrders|account|balance|withdrawal|deposit)\b["'/?]"""
+    r"""["'][^"']*/(order|orders|ordersOpen|cancelOrders|account|balance|withdrawal|deposit)\b"""
     r"""|placeOrder|cancelOrder|updateOrder"""
     r"""|(client|httpx|session|requests)\.(post|put|patch|delete)\(""",
 )
@@ -31,3 +31,9 @@ def test_no_order_or_private_endpoint() -> None:
 def test_env_not_versioned() -> None:
     ignored = (ROOT / ".gitignore").read_text().splitlines()
     assert ".env" in ignored
+
+
+def test_guard_catches_order_paths() -> None:
+    assert FORBIDDEN.search('self._get("/order", params)')
+    assert FORBIDDEN.search("f'/{market}/orders?x'")
+    assert not FORBIDDEN.search('RESET_TABLES = ("orders", "positions")')

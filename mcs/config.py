@@ -36,6 +36,7 @@ class Settings:
     log_dir: Path
     fee_maker: Decimal = DEFAULT_FEE_MAKER
     fee_taker: Decimal = DEFAULT_FEE_TAKER
+    optimizer_workers: int = 4
     # Secrets : jamais affichés (repr=False) ni journalisés.
     api_key: str | None = field(default=None, repr=False)
     api_secret: str | None = field(default=None, repr=False)
@@ -85,6 +86,15 @@ def parse_fee(raw: str | None, default: Decimal, name: str) -> Decimal:
     return rate
 
 
+def parse_workers(raw: str | None) -> int:
+    value = _blank_to_none(raw)
+    if value is None:
+        return 4
+    if not value.isdigit() or not 1 <= int(value) <= 64:
+        raise ConfigError(f"OPTIMIZER_WORKERS invalide : {raw!r} (entier entre 1 et 64).")
+    return int(value)
+
+
 def _blank_to_none(value: str | None) -> str | None:
     if value is None:
         return None
@@ -116,6 +126,7 @@ def load_settings(env_file: Path | str | None = ".env", base_dir: Path | None = 
         log_dir=resolve(values.get("LOG_DIR"), DEFAULT_LOG_DIR),
         fee_maker=parse_fee(values.get("FEE_MAKER"), DEFAULT_FEE_MAKER, "FEE_MAKER"),
         fee_taker=parse_fee(values.get("FEE_TAKER"), DEFAULT_FEE_TAKER, "FEE_TAKER"),
+        optimizer_workers=parse_workers(values.get("OPTIMIZER_WORKERS")),
         api_key=_blank_to_none(values.get("BITVAVO_API_KEY")),
         api_secret=_blank_to_none(values.get("BITVAVO_API_SECRET")),
     )
@@ -129,6 +140,7 @@ _KEYS = frozenset(
         "LOG_DIR",
         "FEE_MAKER",
         "FEE_TAKER",
+        "OPTIMIZER_WORKERS",
         "BITVAVO_API_KEY",
         "BITVAVO_API_SECRET",
     }

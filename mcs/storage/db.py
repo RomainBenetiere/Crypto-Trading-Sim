@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -33,6 +33,24 @@ MIGRATIONS: dict[int, str] = {
     """,
     5: """
         ALTER TABLE simulations ADD COLUMN train_score TEXT;
+    """,
+    6: """
+        CREATE TABLE run_periods_v6 (
+            id          INTEGER PRIMARY KEY,
+            kind        TEXT    NOT NULL CHECK (kind IN ('active', 'hold', 'outage')),
+            started_at  INTEGER NOT NULL,
+            ended_at    INTEGER
+        );
+        INSERT INTO run_periods_v6 SELECT id, kind, started_at, ended_at FROM run_periods;
+        DROP TABLE run_periods;
+        ALTER TABLE run_periods_v6 RENAME TO run_periods;
+        ALTER TABLE engine_state ADD COLUMN basket_json TEXT;
+        ALTER TABLE engine_state ADD COLUMN heartbeat_at INTEGER;
+        CREATE TABLE IF NOT EXISTS sim_state (
+            sim_id      INTEGER PRIMARY KEY REFERENCES simulations (id) ON DELETE CASCADE,
+            state_json  TEXT    NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

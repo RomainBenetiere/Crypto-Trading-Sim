@@ -184,6 +184,12 @@ class Simulation:
         else:
             self._close_position(order.market, Reason.TAKE_PROFIT, now)
 
+    async def restore_take_profits(self, now: int) -> None:
+        """Re-pose les take profit annulés (reprise après un Hold, décision 28)."""
+        for market, position in sorted(self.positions.items()):
+            if position.tp_order_id is None and position.take_profit is not None:
+                await self._sync_take_profit(market, now)
+
     def on_order_closed(self, order: Order) -> None:
         """Ordre expiré ou annulé."""
         pending = self.pending.get(order.market)

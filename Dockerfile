@@ -17,4 +17,4 @@ ENV DB_PATH=/data/mcs.sqlite \
     SQLITE_JOURNAL_MODE=WAL \
     LOG_DIR=/app/logs
 
-CMD ["python", "-m", "mcs.collector", "live"]
+CMD ["python", "-m", "mcs.engine"]

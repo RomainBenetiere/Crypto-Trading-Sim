@@ -32,6 +32,6 @@ python -m mcs.collector backfill         # historique des bougies (--markets, --
 python -m mcs.collector live             # collecte continue (REST + WebSocket)
 python -m mcs.sampling generate         # plan Monte-Carlo (--seed N, --force)
 python -m mcs.optimizer run --workers 8  # optimisation 70/30 des jumelles optimisées
-python -m mcs.engine        # moteur de simulations (étape 7)
+python -m mcs.engine                     # moteur live (collecte + 300 simulations + commandes)
 streamlit run dashboard/app.py
 ```

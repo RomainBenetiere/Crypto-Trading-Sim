@@ -153,6 +153,8 @@ CREATE TABLE IF NOT EXISTS engine_state (
                                  CHECK (optimization_status IN ('TODO', 'RUNNING', 'DONE')),
     optimized_at         INTEGER,
     master_seed          INTEGER,
+    basket_json          TEXT,
+    heartbeat_at         INTEGER,
     started_at           INTEGER,
     active_ms            INTEGER NOT NULL DEFAULT 0,
     hold_ms              INTEGER NOT NULL DEFAULT 0,
@@ -161,7 +163,7 @@ CREATE TABLE IF NOT EXISTS engine_state (
 
 CREATE TABLE IF NOT EXISTS run_periods (
     id          INTEGER PRIMARY KEY,
-    kind        TEXT    NOT NULL CHECK (kind IN ('active', 'hold')),
+    kind        TEXT    NOT NULL CHECK (kind IN ('active', 'hold', 'outage')),
     started_at  INTEGER NOT NULL,
     ended_at    INTEGER
 );
@@ -174,3 +176,9 @@ CREATE TABLE IF NOT EXISTS commands (
     result        TEXT
 );
 CREATE INDEX IF NOT EXISTS commands_pending ON commands (processed_at, id);
+
+CREATE TABLE IF NOT EXISTS sim_state (
+    sim_id      INTEGER PRIMARY KEY REFERENCES simulations (id) ON DELETE CASCADE,
+    state_json  TEXT    NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
