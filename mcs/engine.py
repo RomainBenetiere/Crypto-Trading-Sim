@@ -91,10 +91,9 @@ class EngineError(RuntimeError):
     """Commande refusée (message en français, renvoyé au dashboard)."""
 
 
-def launch_optimizer(workers: int) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [sys.executable, "-m", "mcs.optimizer", "run", "--workers", str(workers)]
-    )
+def launch_optimizer(workers: int, recalibrate: bool) -> subprocess.Popen[bytes]:
+    command = [sys.executable, "-m", "mcs.optimizer", "run", "--workers", str(workers)]
+    return subprocess.Popen([*command, "--all"] if recalibrate else command)
 
 
 class Engine:
@@ -108,7 +107,7 @@ class Engine:
         clock: Callable[[], int] = now_ms,
         data_loader: Callable[[sqlite3.Connection, list[str]], Dataset] = load_dataset,
         optimizer_workers: int = 4,
-        optimizer_launcher: Callable[[int], Any] = launch_optimizer,
+        optimizer_launcher: Callable[[int, bool], Any] = launch_optimizer,
     ) -> None:
         self.conn, self.fees, self.books = conn, fees, books
         self.tickers = tickers if tickers is not None else {}
@@ -207,12 +206,15 @@ class Engine:
 
     async def _optimize(self, now: int) -> str:
         self._require(Status.NOT_STARTED, "Optimiser")
-        if read_state(self.conn).optimization_status == "RUNNING":
+        optimization = read_state(self.conn).optimization_status
+        if optimization == "RUNNING":
             raise EngineError("une optimisation est déjà en cours.")
         if not self.conn.execute("SELECT COUNT(*) FROM simulations").fetchone()[0]:
             raise EngineError("aucun plan de simulations (python -m mcs.sampling generate).")
-        self.optimizer_process = self.optimizer_launcher(self.optimizer_workers)
-        return f"optimisation lancée ({self.optimizer_workers} cœurs)"
+        recalibrate = optimization == "DONE"
+        self.optimizer_process = self.optimizer_launcher(self.optimizer_workers, recalibrate)
+        what = "recalibrage de toutes les jumelles" if recalibrate else "optimisation"
+        return f"{what} lancée ({self.optimizer_workers} cœurs)"
 
     async def _start(self, now: int) -> str:
         self._require(Status.NOT_STARTED, "Lancer")

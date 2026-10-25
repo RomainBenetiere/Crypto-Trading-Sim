@@ -282,6 +282,7 @@ def run(
     only: Sequence[int] | None = None,
     force: bool = False,
     data: Dataset | None = None,
+    recalibrate: bool = False,
 ) -> list[OptimizationResult]:
     state = conn.execute("SELECT status, optimization_status FROM engine_state").fetchone()
     if state["status"] != "NOT_STARTED":
@@ -290,6 +291,9 @@ def run(
         raise OptimizationError(
             "Une optimisation est déjà en cours (--force si elle a été interrompue brutalement)."
         )
+    if recalibrate:
+        # « Optimiser » après une optimisation terminée : toutes les jumelles sont recalibrées.
+        conn.execute("UPDATE simulations SET optimized_at = NULL WHERE mode = 'optimized'")
     sims = pending_simulations(conn, only)
     if not sims:
         raise OptimizationError("Aucune simulation optimisée à traiter (plan absent ou déjà fait).")
@@ -349,13 +353,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--trials", type=int, default=TRIALS)
     parser.add_argument("--only", type=int, nargs="*", help="identifiants de simulations")
     parser.add_argument("--force", action="store_true", help="ignore un statut RUNNING orphelin")
+    parser.add_argument("--all", action="store_true", help="recalibre toutes les jumelles")
     args = parser.parse_args(argv)
     settings = load_settings()
     configure_logging(settings.log_dir, "optimizer", settings.secrets)
     conn = connect(settings.db_path, settings.journal_mode)
     fees = FeeSchedule(settings.fee_maker, settings.fee_taker)
     try:
-        results = run(conn, fees, args.workers, args.trials, args.only, args.force)
+        results = run(
+            conn, fees, args.workers, args.trials, args.only, args.force, recalibrate=args.all
+        )
     except OptimizationError as exc:
         raise SystemExit(str(exc)) from None
     finally:

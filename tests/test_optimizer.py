@@ -124,6 +124,8 @@ def test_run_optimizes_saves_and_resumes(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE engine_state SET optimization_status = 'TODO'")
     resumed = run(conn, FEES, trials=3, data=data)
     assert [r.sim_id for r in resumed] == [4]  # reprise : seule la simulation restante
+    recalibrated = run(conn, FEES, trials=3, data=data, recalibrate=True)
+    assert sorted(r.sim_id for r in recalibrated) == [2, 4]  # « Optimiser » à nouveau
 
 
 def test_run_is_reproducible(conn: sqlite3.Connection, tmp_path: object) -> None:

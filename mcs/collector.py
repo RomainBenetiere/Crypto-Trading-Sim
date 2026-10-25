@@ -22,6 +22,8 @@ from decimal import Decimal
 from mcs.bitvavo.rest import BitvavoRest
 from mcs.bitvavo.ws import BitvavoWebSocket, CandleHandler
 from mcs.config import Settings, load_settings
+from mcs.indicators.core import atr
+from mcs.indicators.frame import candles_to_frame, fill_gaps
 from mcs.logging_setup import configure_logging
 from mcs.market_data import INTERVAL_MS, INTERVALS, MINUTE_MS, aggregate, floor_ts
 from mcs.spread import SpreadTracker
@@ -29,6 +31,7 @@ from mcs.storage.candles import load_candles, ts_bounds, upsert_candles
 from mcs.storage.db import connect, now_ms
 from mcs.storage.markets import (
     LatestPrice,
+    update_atr_estimate,
     update_market_stats,
     update_spread_estimate,
     upsert_latest_prices,
@@ -139,6 +142,19 @@ async def refresh_markets(
         log.info(
             "%s : %d jours d'historique, volume 24 h %s €.", info.market, days, ticker.volume_quote
         )
+        atr = atr_4h_pct(conn, info.market, now)
+        if atr is not None:
+            update_atr_estimate(conn, info.market, atr)
+
+
+def atr_4h_pct(conn: sqlite3.Connection, market: str, now: int) -> Decimal | None:
+    """Volatilité affichée dans le dashboard : ATR 4 h (14) en % de la dernière clôture."""
+    candles = load_candles(conn, market, "4h", start=now - 200 * INTERVAL_MS["4h"])
+    if len(candles) < 30:
+        return None
+    frame = fill_gaps(candles_to_frame(candles), "4h")
+    value = float(atr(frame, 14).iloc[-1] / frame["close"].iloc[-1] * 100)
+    return Decimal(repr(round(value, 3)))
 
 
 async def backfill(

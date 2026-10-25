@@ -8,6 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY mcs ./mcs
+COPY dashboard ./dashboard
 RUN pip install . && useradd --create-home --uid 1000 mcs && mkdir -p /data /app/logs \
     && chown -R mcs /data /app/logs
 USER mcs

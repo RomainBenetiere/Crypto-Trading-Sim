@@ -62,11 +62,11 @@ def setup(conn: sqlite3.Connection, data):  # type: ignore[no-untyped-def]
 
     def make_engine() -> Engine:
         engine = Engine(conn, FEES, Books(data), clock=clock, data_loader=lambda c, b: data,
-                        optimizer_launcher=launched.append)  # fmt: skip
+                        optimizer_launcher=lambda w, r: launched.append((w, r)))  # fmt: skip
         engine.startup()
         return engine
 
-    launched: list[int] = []
+    launched: list[tuple[int, bool]] = []
     return conn, clock, make_engine, launched
 
 
@@ -89,7 +89,7 @@ async def test_state_machine(setup) -> None:  # type: ignore[no-untyped-def]
     assert "refusée" in await command(engine, Command.START)  # optimisation pas terminée
     assert "refusée" in await command(engine, Command.STOP)
     assert "lancée" in await command(engine, Command.OPTIMIZE)
-    assert launched == [4]
+    assert launched == [(4, False)]
     conn.execute("UPDATE engine_state SET optimization_status = 'DONE'")
     assert "lancé" in await command(engine, Command.START)
     state = read_state(conn)

@@ -26,7 +26,7 @@ La spécification complète est dans `docs/SPEC.md`. Lis-la entièrement avant d
 ```bash
 pip install -e ".[dev]"
 pytest                                   # MCS_LIVE_TESTS=1 pour les tests contre l'API réelle
-ruff check . && ruff format --check . && mypy mcs
+ruff check . && ruff format --check . && mypy mcs dashboard
 python -m mcs.collector markets          # caractéristiques des marchés, historique, volume 24 h
 python -m mcs.collector backfill         # historique des bougies (--markets, --intervals, --minute-days)
 python -m mcs.collector live             # collecte continue (REST + WebSocket)

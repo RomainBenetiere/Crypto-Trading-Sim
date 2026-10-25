@@ -281,6 +281,9 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
     - buy & hold valorisé net des frais de vente estimés, reliquat d'arrondi compris ; série horaire reconstituée à partir des clôtures 1 h ;
     - tornade et synthèse calculées à la demande à partir de `metrics` (donc au rythme horaire), sans table supplémentaire ; tiers des variables numériques triés sur la valeur seule ;
     - limite connue : comparer la pire et la meilleure option à 2 erreurs-types donne plus de faux positifs que 5 % quand une variable a beaucoup d'options ; une barre pleine reste à confirmer par sa stabilité dans le temps.
+35. **Accès au dashboard** : réseau local uniquement, sans mot de passe (port 8501 à ne pas exposer à Internet). Le dashboard ne contient aucun secret.
+36. **Fuseau horaire affiché** : Europe/Paris (heure d'été comprise) ; la base reste en UTC.
+37. **Dashboard (étape 9)** : Streamlit + Plotly (`streamlit run dashboard/app.py`) ; lecture seule de la base sauf deux écritures (commandes, sélection du panier) ; boutons selon la machine à états, confirmation pour « Remettre à zéro » et pour « Optimiser » quand l'optimisation est déjà faite (recalibrage de toutes les jumelles, `optimizer run --all`) ; cours et positions du top 5 rafraîchis chaque minute, le reste dès que le moteur écrit de nouvelles métriques ; tri des tableaux par une liste « Trier par » (affichage au format fr-FR) ; ATR 4 h (14, en % de la clôture) calculé par le collecteur lors de la mise à jour quotidienne des marchés ; service `dashboard` dans `docker-compose.yml`.
 
 ## 14. Plan de développement proposé
 

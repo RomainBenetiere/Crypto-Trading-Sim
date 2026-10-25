@@ -1,4 +1,4 @@
-# Production (conteneur Docker sur le serveur Proxmox). Le dashboard viendra à l'étape 9.
+# Production (conteneurs Docker sur le serveur Proxmox).
 services:
   engine:
     build: .
@@ -13,6 +13,26 @@ services:
       - mcs-logs:/app/logs
     restart: unless-stopped
     stop_grace_period: 30s
+
+  dashboard:
+    build: .
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
+              "--server.port=8501", "--server.headless=true",
+              "--browser.gatherUsageStats=false"]
+    env_file: .env
+    environment:
+      DB_PATH: /data/mcs.sqlite
+      SQLITE_JOURNAL_MODE: WAL
+      LOG_DIR: /app/logs
+    volumes:
+      - mcs-data:/data
+      - mcs-logs:/app/logs
+    # Réseau local uniquement (décision 35) : ne pas exposer ce port à Internet.
+    ports:
+      - "8501:8501"
+    depends_on:
+      - engine
+    restart: unless-stopped
 
 volumes:
   mcs-data:
