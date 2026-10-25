@@ -164,7 +164,7 @@ def test_app_not_started_and_optimize_button(app_db: Path) -> None:
         "Paramètres des indicateurs",
         "Marchés du panier",
     ]
-    assert any("Non démarré" in str(m.value) for m in at.metric)
+    assert any("**Statut** : Non démarré" in m.value for m in at.markdown)
     assert {b.label for b in at.button} >= {"Optimiser les indicateurs", "Valider la sélection"}
     assert "Lancer les simulations" not in {b.label for b in at.button}
     at.button(key="btn_optimize").click().run()
