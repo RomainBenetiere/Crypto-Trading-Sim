@@ -47,6 +47,7 @@ MINUTE_DELAY_MS = 3_000  # laisse à Bitvavo le temps de finaliser la bougie qui
 TICKER_STALE_MS = 120_000
 MARKETS_REFRESH_MS = DAY_MS
 SPREAD_UPDATE_MS = INTERVAL_MS["1h"]
+VOLUME_TOLERANCE = Decimal("1e-9")
 SPREAD_MIN_SAMPLES = (
     30  # après un redémarrage, ne pas écraser l'estimation avec trop peu de relevés
 )
@@ -101,16 +102,24 @@ async def sync_candles(
 def check_consistency(conn: sqlite3.Connection, market: str, interval: str, ts: int) -> list[str]:
     """Compare la bougie officielle `interval` à l'agrégation des bougies 1 min stockées."""
     official = load_candles(conn, market, interval, ts, ts + 1)
+    first_minute = ts_bounds(conn, market, "1m")
+    # Comparaison seulement si l'historique 1 min couvre toute la bougie.
+    if not official or first_minute is None or first_minute[0] > ts:
+        return []
     minutes = load_candles(conn, market, "1m", ts, ts + INTERVAL_MS[interval])
-    if not official or not minutes:
+    if not minutes:
         return []
     built = aggregate(minutes, interval)[0]
     reference = official[0]
-    return [
+    differences = [
         f"{field} : officiel {getattr(reference, field)} / 1 min {getattr(built, field)}"
-        for field in ("open", "high", "low", "close", "volume")
+        for field in ("open", "high", "low", "close")
         if getattr(reference, field) != getattr(built, field)
     ]
+    # Volumes : Bitvavo arrondit différemment la somme, tolérance relative de 1e-9.
+    if abs(reference.volume - built.volume) > max(reference.volume, Decimal(1)) * VOLUME_TOLERANCE:
+        differences.append(f"volume : officiel {reference.volume} / 1 min {built.volume}")
+    return differences
 
 
 async def refresh_markets(

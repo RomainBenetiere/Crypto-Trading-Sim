@@ -74,6 +74,7 @@ log = logging.getLogger("mcs.engine")
 INITIAL_CAPITAL = Decimal(1000)
 OUTAGE_AFTER_MS = 5 * MINUTE_MS
 COMMAND_POLL_S = 2.0
+HEARTBEAT_S = 30.0
 TICK_DELAY_MS = 3_000
 BOOK_TTL_S = 30.0
 RESET_TABLES = (
@@ -122,6 +123,8 @@ class Engine:
         self.sims: dict[int, Simulation] = {}
         self.metrics: dict[int, SimMetrics] = {}
         self.last_1h = self.last_4h = 0
+        # Les commandes, les bougies 1 min et les clôtures ne s'entrelacent jamais.
+        self.lock = asyncio.Lock()
 
     # --- Démarrage et état en mémoire -----------------------------------------------------
 
@@ -180,6 +183,10 @@ class Engine:
 
     async def process_commands(self) -> bool:
         """Exécute la plus ancienne commande en attente. Retourne True si une a été traitée."""
+        async with self.lock:
+            return await self._process_next_command()
+
+    async def _process_next_command(self) -> bool:
         command = next_command(self.conn)
         if command is None:
             return False
@@ -303,6 +310,10 @@ class Engine:
 
     async def on_minute_candle(self, candle: Candle) -> None:
         """Bougie 1 min reçue du WebSocket (en cours) : stops puis ordres limite."""
+        async with self.lock:
+            await self._on_minute_candle(candle)
+
+    async def _on_minute_candle(self, candle: Candle) -> None:
         if self.status is not Status.RUNNING or self.broker is None or self.ctx is None:
             return
         now = self.clock()
@@ -320,6 +331,10 @@ class Engine:
 
     async def on_tick(self, now: int) -> None:
         """Chaque minute, après la collecte des bougies clôturées."""
+        async with self.lock:
+            await self._on_tick(now)
+
+    async def _on_tick(self, now: int) -> None:
         heartbeat(self.conn, now)
         if self.broker is None or self.ctx is None:
             return
@@ -423,24 +438,43 @@ async def run_engine() -> None:
         )
         engine.startup()
         log.info("Moteur démarré (état %s).", engine.status.value)
-        ws_task = asyncio.create_task(collector.ws.run(), name="bitvavo-ws")
-        next_tick = 0
+
+        async def heartbeats() -> None:
+            # Indépendant de la collecte : un long rattrapage ne fait pas croire à un arrêt.
+            while True:
+                heartbeat(conn, now_ms())
+                await asyncio.sleep(HEARTBEAT_S)
+
+        async def commands() -> None:
+            # Traitées toutes les 2 s, même pendant un rattrapage de bougies.
+            while True:
+                try:
+                    await engine.process_commands()
+                except Exception:
+                    log.exception("Échec du traitement d'une commande.")
+                await asyncio.sleep(COMMAND_POLL_S)
+
+        tasks = [
+            asyncio.create_task(collector.ws.run(), name="bitvavo-ws"),
+            asyncio.create_task(heartbeats(), name="heartbeat"),
+            asyncio.create_task(commands(), name="commands"),
+        ]
         try:
             while True:
-                await engine.process_commands()
                 now = now_ms()
-                if now >= next_tick:
-                    try:
-                        await collector.tick(now)
-                        await engine.on_tick(now)
-                    except Exception:
-                        log.exception("Échec du cycle, nouvel essai à la minute suivante.")
-                    next_tick = floor_ts(now_ms(), "1m") + MINUTE_MS + TICK_DELAY_MS
-                await asyncio.sleep(COMMAND_POLL_S)
+                try:
+                    await collector.tick(now)
+                    await engine.on_tick(now)
+                except Exception:
+                    log.exception("Échec du cycle, nouvel essai à la minute suivante.")
+                next_tick = floor_ts(now_ms(), "1m") + MINUTE_MS + TICK_DELAY_MS
+                await asyncio.sleep(max(next_tick - now_ms(), 0) / 1000)
         finally:
-            ws_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await ws_task
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             conn.close()
 
 

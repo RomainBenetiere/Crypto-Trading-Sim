@@ -107,3 +107,18 @@ def test_consistency_check_detects_mismatch(conn: sqlite3.Connection) -> None:
         ],
     )
     assert check_consistency(conn, "BTC-EUR", "1h", 0) == ["high : officiel 13 / 1 min 12"]
+
+
+def test_consistency_tolerates_volume_rounding_and_needs_full_minutes(
+    conn: sqlite3.Connection,
+) -> None:
+    p = Decimal(10)
+    upsert_candles(conn, [Candle("ETH-EUR", "1m", 30 * M, p, p, p, p, Decimal("110510752.5918"))])
+    official = Candle("ETH-EUR", "1h", 0, p, p, p, p, Decimal("110510752.59180005"))
+    upsert_candles(conn, [official])
+    # L'historique 1 min commence au milieu de l'heure : pas de comparaison possible.
+    assert check_consistency(conn, "ETH-EUR", "1h", 0) == []
+    upsert_candles(conn, [Candle("ETH-EUR", "1m", 0, p, p, p, p, Decimal(0))])
+    assert check_consistency(conn, "ETH-EUR", "1h", 0) == []  # écart d'arrondi toléré
+    upsert_candles(conn, [Candle("ETH-EUR", "1h", 0, p, p, p, p, Decimal(100))])
+    assert check_consistency(conn, "ETH-EUR", "1h", 0)[0].startswith("volume")
