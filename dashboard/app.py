@@ -118,23 +118,21 @@ def control_bar() -> None:
     info = queries.engine_info(ro())
     status = queries.STATUS_LABELS[info.status]
     optimization = queries.OPTIMIZATION_LABELS[info.optimization_status]
-    cols = st.columns([1.2, 2.2, 2.2, 3.4])
-    cols[0].metric("Statut", status)
-    opt_detail = f"{info.optimized} / {info.simulations // 2} jumelles optimisées"
+    opt_detail = f"{info.optimized} / {info.simulations // 2} jumelles"
     if info.optimized_at:
         opt_detail += f", le {fmt.timestamp(info.optimized_at)}"
-    cols[1].metric("Optimisation", optimization, opt_detail, delta_color="off")
+    started = "—"
     if info.started_at:
-        cols[2].metric(
-            "Démarré le",
-            fmt.timestamp(info.started_at, with_time=False),
-            f"actif {fmt.duration_days(info.active_ms)} · hold {fmt.duration_days(info.paused_ms)}",
-            delta_color="off",
+        started = (
+            f"{fmt.timestamp(info.started_at, with_time=False)} (actif "
+            f"{fmt.duration_days(info.active_ms)}, hold ou interruption "
+            f"{fmt.duration_days(info.paused_ms)})"
         )
-    else:
-        cols[2].metric("Démarré le", "—")
-    with cols[3]:
-        buttons(info)
+    st.markdown(
+        f"**Statut** : {status} · **Optimisation** : {optimization} ({opt_detail}) · "
+        f"**Démarré le** : {started}"
+    )
+    buttons(info)
     if info.heartbeat_at is None or now_ms() - info.heartbeat_at > HEARTBEAT_STALE_MS:
         last = fmt.timestamp(info.heartbeat_at) if info.heartbeat_at else "jamais"
         st.warning(
@@ -170,7 +168,7 @@ def buttons(info: queries.EngineInfo) -> None:
             st.session_state.pop("confirm")
             st.rerun()
         return
-    row = st.columns(max(len(allowed), 1))
+    row = st.columns([1] * max(len(allowed), 1) + [3])
     for col, command in zip(row, allowed, strict=False):
         needs_confirm = command is Command.RESET or (
             command is Command.OPTIMIZE and info.optimization_status == "DONE"
@@ -345,7 +343,7 @@ def metrics_columns(frame: pd.DataFrame) -> pd.DataFrame:
             "P&L": frame["pnl_eur"].map(fmt.signed_eur),
             "P&L %": frame["pnl_pct"].map(lambda v: fmt.pct(v, signed=True)),
             "Drawdown max": frame["dd_pct"].map(fmt.pct),
-            "Trades": frame["trades"],
+            "Trades": frame["trades"].map(lambda v: "—" if pd.isna(v) else str(int(v))),
             "Réussite": frame["win_rate"].map(fmt.share),
             "Frais": frame["fees"].map(fmt.eur),
             "vs buy & hold": frame["bh_gap"].map(fmt.signed_eur),
