@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS simulations (
     config_json       TEXT    NOT NULL,
     draw_json         TEXT    NOT NULL DEFAULT '{}',
     seed              INTEGER NOT NULL,
+    train_score       TEXT,
     validation_score  TEXT,
     created_at        INTEGER NOT NULL,
     optimized_at      INTEGER,

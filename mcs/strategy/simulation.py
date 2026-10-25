@@ -18,14 +18,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
-import pandas as pd
-
 from mcs.broker.base import Broker, Order, OrderStatus, Reason, Rejection, Side
 from mcs.broker.fees import FeeSchedule
 from mcs.market_data import INTERVAL_MS
 from mcs.risk.exits import (
     initial_stop,
-    last_atr,
     take_profit_level,
     take_profit_quantity,
     trailing_level,
@@ -82,6 +79,7 @@ class Simulation:
         self.pause_until: dict[str, int] = {}
         self.breaker_until: int | None = None
         self.peak_value = initial_capital
+        self.trade_pnls: list[Decimal] = []  # P&L net de chaque position clôturée
 
     # --- Valorisation et circuit breaker ---------------------------------------------------
 
@@ -107,7 +105,7 @@ class Simulation:
         threshold = self.peak_value * (1 - self.config.portfolio.circuit_breaker_drawdown)
         if self.breaker_until is None and value < threshold:
             self.breaker_until = now + CIRCUIT_BREAKER_PAUSE_BARS * BAR_4H
-            log.warning("Sim %d : circuit breaker (valeur %s, plus haut %s) : pause de 7 jours.",
+            log.info("Sim %d : circuit breaker (valeur %s, plus haut %s) : pause de 7 jours.",
                         self.sim_id, value, self.peak_value)  # fmt: skip
 
     # --- Événements ------------------------------------------------------------------------
@@ -116,16 +114,15 @@ class Simulation:
         self._update_breaker(now, self.portfolio_value(ctx))
         for market in sorted(self.positions):
             position = self.positions[market]
-            frame = ctx.frame_4h(market)
             position.bars_held += 1
-            if len(frame):
-                high = Decimal(repr(float(frame["high"].iloc[-1])))
+            high = ctx.highest_high_4h(market, 1)
+            if high is not None:
                 position.highest_high = max(position.highest_high, high)
             reason = self._exit_reason(market, position, ctx)
             if reason is not None:
                 await self.exit(market, reason, now)
                 continue
-            self._update_trailing(position, frame)
+            self._update_trailing(position, ctx, market)
             self._save(position, now)
         candidates = []
         for market in self.markets:
@@ -143,7 +140,7 @@ class Simulation:
         for market, position in self.positions.items():
             if market in hourly_highs:
                 position.highest_high = max(position.highest_high, hourly_highs[market])
-            self._update_trailing(position, ctx.frame_4h(market))
+            self._update_trailing(position, ctx, market)
             self._save(position, now)
 
     async def on_price(self, market: str, low: Decimal, now: int) -> bool:
@@ -152,7 +149,7 @@ class Simulation:
         if position is None or low > position.stop:
             return False
         reason = Reason.TRAILING if position.stop_from_trailing else Reason.STOP
-        return await self.exit(market, reason, now)
+        return await self.exit(market, reason, now, trigger_price=position.stop)
 
     async def on_order_filled(self, order: Order, ctx: MarketContext, now: int) -> None:
         if order.side is Side.BUY:
@@ -160,13 +157,16 @@ class Simulation:
             if pending is None or pending.order_id != order.id:
                 return
             del self.pending[order.market]
-            self._open_or_add(order, ctx.frame_4h(order.market), now)
+            self._open_or_add(order, ctx, now)
             await self._sync_take_profit(order.market, now)
             return
         position = self.positions.get(order.market)
         if position is None or position.tp_order_id != order.id:
             return
         position.tp_order_id = None
+        assert order.notional is not None and order.fee is not None
+        cost = position.invested_cost * order.quantity / position.quantity
+        position.realized_pnl += order.notional - order.fee - cost
         position.reduce(order.quantity)
         if self.config.take_profit.type is TakeProfitType.PARTIAL and position.quantity > 0:
             position.partial_done = True
@@ -177,7 +177,7 @@ class Simulation:
             if self.config.trailing.type is TrailingType.NONE:
                 position.raise_stop(position.avg_entry_price)
             else:
-                self._update_trailing(position, ctx.frame_4h(order.market))
+                self._update_trailing(position, ctx, order.market)
             log.info("Sim %d : take profit partiel %s, %s restants.", self.sim_id,
                      order.market, position.quantity)  # fmt: skip
             self._save(position, now)
@@ -212,24 +212,31 @@ class Simulation:
             return Reason.MAX_DURATION
         return None
 
-    async def exit(self, market: str, reason: Reason, now: int) -> bool:
-        """Sortie complète au marché (le take profit en attente est d'abord annulé)."""
+    async def exit(
+        self, market: str, reason: Reason, now: int, trigger_price: Decimal | None = None
+    ) -> bool:
+        """Sortie complète au marché (le take profit en attente est d'abord annulé).
+        `trigger_price` : niveau du stop déclenché (utilisé par le backtest historique)."""
         position = self.positions.get(market)
         if position is None:
             return False
         if position.tp_order_id is not None:
             await self.broker.cancel_order(position.tp_order_id, now)
             position.tp_order_id = None
-        result = await self.broker.sell_market(self.sim_id, market, position.quantity, reason, now)
+        result = await self.broker.sell_market(
+            self.sim_id, market, position.quantity, reason, now, trigger_price=trigger_price
+        )
         if isinstance(result, Rejection):
-            log.warning("Sim %d : sortie %s (%s) impossible : %s.", self.sim_id, market, reason,
+            log.info("Sim %d : sortie %s (%s) impossible : %s.", self.sim_id, market, reason,
                         result.detail)  # fmt: skip
             return False
+        assert result.notional is not None and result.fee is not None
+        position.realized_pnl += result.notional - result.fee - position.invested_cost
         self._close_position(market, reason, now)
         return True
 
     def _close_position(self, market: str, reason: Reason, now: int) -> None:
-        del self.positions[market]
+        self.trade_pnls.append(self.positions.pop(market).realized_pnl)
         if self.store is not None:
             self.store.delete(self.sim_id, market)
         pause = self.config.portfolio.pause_after_stop_bars
@@ -237,10 +244,10 @@ class Simulation:
             self.pause_until[market] = now + pause * BAR_4H
         log.info("Sim %d : position %s clôturée (%s).", self.sim_id, market, reason)
 
-    def _update_trailing(self, position: Position, frame: pd.DataFrame) -> None:
+    def _update_trailing(self, position: Position, ctx: MarketContext, market: str) -> None:
         if self.config.trailing.type is TrailingType.NONE:
             return
-        level = trailing_level(self.config, position, frame)
+        level = trailing_level(self.config, position, ctx, market)
         if level is not None:
             position.trailing = level
         if not position.trailing_active and trailing_should_activate(self.config, position):
@@ -266,7 +273,7 @@ class Simulation:
             return None
         if ctx.daily_history_days(market) < MIN_DAILY_HISTORY:
             return None
-        if len(ctx.frame_4h(market)) < config.warmup_4h:
+        if ctx.bars_4h(market) < config.warmup_4h:
             return None
         if config.trend.enabled and not ctx.state(market, config.trend.filter, "favorable"):
             return None
@@ -287,7 +294,6 @@ class Simulation:
 
     async def _enter(self, market: str, now: int, ctx: MarketContext) -> None:
         config = self.config
-        frame = ctx.frame_4h(market)
         is_add = market in self.positions
         if config.execution.entry_order is EntryOrder.LIMIT:
             reference = ctx.best_bid(market)  # décision 12
@@ -295,7 +301,7 @@ class Simulation:
             reference = ctx.last_price(market)
         if reference is None:
             return
-        stop = initial_stop(config, reference, frame)
+        stop = initial_stop(config, reference, ctx, market)
         if is_add:
             stop = self.positions[market].stop if stop is None else stop
         if stop is None:
@@ -317,7 +323,7 @@ class Simulation:
         if config.execution.entry_order is EntryOrder.MARKET:
             result = await self.broker.buy_market(self.sim_id, market, amount, Reason.SIGNAL, now)
             if isinstance(result, Order):
-                self._open_or_add(result, frame, now)
+                self._open_or_add(result, ctx, now)
                 await self._sync_take_profit(market, now)
             return
         expires_at = now + config.execution.limit_expiry_hours * HOUR
@@ -337,7 +343,7 @@ class Simulation:
         )  # fmt: skip
         return total + reserved
 
-    def _open_or_add(self, order: Order, frame: pd.DataFrame, now: int) -> None:
+    def _open_or_add(self, order: Order, ctx: MarketContext, now: int) -> None:
         assert order.price is not None and order.notional is not None and order.fee is not None
         market, price = order.market, order.price
         position = self.positions.get(market)
@@ -347,9 +353,9 @@ class Simulation:
             log.info("Sim %d : renforcement %s (lot %d) à %s, stop %s.", self.sim_id, market,
                      position.lots, price, position.stop)  # fmt: skip
         else:
-            stop = initial_stop(self.config, price, frame)
+            stop = initial_stop(self.config, price, ctx, market)
             if stop is None:
-                atr = last_atr(frame)
+                atr = ctx.atr_4h(market)
                 stop = price - 2 * atr if atr is not None and atr < price else None
                 stop = stop if stop is not None else price * (1 - FALLBACK_STOP)
                 log.warning("Sim %d : stop initial %s recalculé par défaut (%s).", self.sim_id,
@@ -361,7 +367,7 @@ class Simulation:
                 last_entry_price=price, highest_high=price, opened_at=now,
             )  # fmt: skip
             self.positions[market] = position
-            self._update_trailing(position, frame)
+            self._update_trailing(position, ctx, market)
             log.info("Sim %d : entrée %s à %s, stop %s (R %s).", self.sim_id, market, price,
                      stop, position.risk_per_unit)  # fmt: skip
         self._save(position, now)

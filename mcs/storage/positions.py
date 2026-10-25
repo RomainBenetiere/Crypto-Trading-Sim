@@ -24,6 +24,7 @@ class SqlitePositionStore:
             "trailing_active": position.trailing_active,
             "tp_order_id": position.tp_order_id,
             "partial_done": position.partial_done,
+            "realized_pnl": str(position.realized_pnl),
         }
         with transaction(self.conn):
             self.conn.execute(
@@ -74,5 +75,6 @@ class SqlitePositionStore:
                 take_profit=Decimal(row["take_profit"]) if row["take_profit"] else None,
                 tp_order_id=state["tp_order_id"],
                 partial_done=state["partial_done"],
+                realized_pnl=Decimal(state.get("realized_pnl", "0")),
             )
         return positions

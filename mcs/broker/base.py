@@ -96,8 +96,15 @@ class Broker(Protocol):
         """Achète pour au plus `quote_amount` € frais compris."""
 
     async def sell_market(
-        self, sim_id: int, market: str, quantity: Decimal, reason: Reason, now: int
-    ) -> Order | Rejection: ...
+        self,
+        sim_id: int,
+        market: str,
+        quantity: Decimal,
+        reason: Reason,
+        now: int,
+        trigger_price: Decimal | None = None,
+    ) -> Order | Rejection:
+        """Vente au marché ; `trigger_price` = niveau du stop déclenché, s'il y en a un."""
 
     async def place_limit_buy(
         self,

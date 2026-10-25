@@ -203,7 +203,13 @@ class PaperBroker:
         )
 
     async def sell_market(
-        self, sim_id: int, market: str, quantity: Decimal, reason: Reason, now: int
+        self,
+        sim_id: int,
+        market: str,
+        quantity: Decimal,
+        reason: Reason,
+        now: int,
+        trigger_price: Decimal | None = None,  # ignoré : le carnet réel fait foi en live
     ) -> Order | Rejection:
         account = self.accounts[sim_id]
         rules = self._rules(sim_id, market, Side.SELL)

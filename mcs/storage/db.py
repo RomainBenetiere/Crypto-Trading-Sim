@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -30,6 +30,9 @@ MIGRATIONS: dict[int, str] = {
     4: """
         ALTER TABLE simulations ADD COLUMN draw_json TEXT NOT NULL DEFAULT '{}';
         ALTER TABLE engine_state ADD COLUMN master_seed INTEGER;
+    """,
+    5: """
+        ALTER TABLE simulations ADD COLUMN train_score TEXT;
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

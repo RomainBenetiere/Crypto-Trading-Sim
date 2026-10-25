@@ -379,7 +379,7 @@ def generate_plan(
                     stamp,
                 )
             )
-            params.extend(_indicator_rows(sim_id, config, typical))
+            params.extend(indicator_rows(sim_id, config, typical))
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("DELETE FROM simulations")
@@ -408,7 +408,7 @@ def generate_plan(
     return master
 
 
-def _indicator_rows(
+def indicator_rows(
     sim_id: int, config: StrategyConfig, typical: IndicatorValues
 ) -> list[tuple[Any, ...]]:
     signals = config.signals

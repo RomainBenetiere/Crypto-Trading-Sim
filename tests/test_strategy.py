@@ -31,6 +31,7 @@ from mcs.strategy.config import (
     TrendAction,
     TrendFilterConfig,
 )
+from mcs.strategy.context import FramesContext
 from mcs.strategy.simulation import PendingEntry
 from tests.strategy_harness import BAR, MARKET, Harness, Switch
 
@@ -101,28 +102,28 @@ def frame(rows: list[tuple[float, float, float]]) -> pd.DataFrame:
 
 
 def test_initial_stop_types() -> None:
-    bars = frame([(100.0, 101.0, 99.0)] * 20 + [(100.0, 101.0, 95.0)])
+    bars = FramesContext({MARKET: frame([(100.0, 101.0, 99.0)] * 20 + [(100.0, 101.0, 95.0)])}, {})
     pct = make_config(Switch(), stop=StopConfig(StopType.FIXED_PCT, pct=D("0.05")))
-    assert initial_stop(pct, D(100), bars) == D(95)
+    assert initial_stop(pct, D(100), bars, MARKET) == D(95)
     atr = make_config(Switch(), stop=StopConfig(StopType.ATR, atr_multiple=D(2)))
-    level = initial_stop(atr, D(100), bars)
+    level = initial_stop(atr, D(100), bars, MARKET)
     assert level is not None and D(95) < level < D(96)  # ATR ≈ 2,2
     lowest = make_config(Switch(), stop=StopConfig(StopType.LOWEST_LOW, lowest_n=5))
-    assert initial_stop(lowest, D(100), bars) == D(95)
-    assert initial_stop(lowest, D(94), bars) is None  # stop au-dessus de l'entrée : refusé
+    assert initial_stop(lowest, D(100), bars, MARKET) == D(95)
+    assert initial_stop(lowest, D(94), bars, MARKET) is None  # stop au-dessus de l'entrée : refusé
 
 
 def test_trailing_levels() -> None:
-    bars = frame([(100.0, 101.0, 99.0)] * 30)
+    bars = FramesContext({MARKET: frame([(100.0, 101.0, 99.0)] * 30)}, {})
     pos = Position(MARKET, 1, D(1), D(100), D(100), D(0), D(5), D(95), D(95), D(100), D(110), 0)
     pct = make_config(Switch(), trailing=TrailingConfig(TrailingType.PCT, pct=D("0.1")))
-    assert trailing_level(pct, pos, bars) == D(99)
+    assert trailing_level(pct, pos, bars, MARKET) == D(99)
     atr = make_config(Switch(), trailing=TrailingConfig(TrailingType.ATR, atr_multiple=D(3)))
-    assert trailing_level(atr, pos, bars) == D(110) - 3 * D("2.0")
+    assert trailing_level(atr, pos, bars, MARKET) == D(110) - 3 * D("2.0")
     chandelier = make_config(
         Switch(), trailing=TrailingConfig(TrailingType.CHANDELIER, atr_multiple=D(2))
     )
-    assert trailing_level(chandelier, pos, bars) == D(101) - 2 * D("2.0")
+    assert trailing_level(chandelier, pos, bars, MARKET) == D(101) - 2 * D("2.0")
 
 
 def test_take_profit_levels() -> None:

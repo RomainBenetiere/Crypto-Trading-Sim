@@ -26,6 +26,7 @@ class Position:
     take_profit: Decimal | None = None
     tp_order_id: int | None = None
     partial_done: bool = False
+    realized_pnl: Decimal = Decimal(0)  # P&L net des ventes partielles déjà réalisées
 
     def raise_stop(self, level: Decimal) -> bool:
         """Remonte le stop si `level` est plus haut. Le stop ne redescend jamais."""
