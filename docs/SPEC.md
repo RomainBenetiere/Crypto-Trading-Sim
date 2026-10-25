@@ -275,6 +275,12 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
     - « Lancer » fige le panier (`engine_state.basket_json`) et achète le buy & hold au carnet réel ; « Remettre à zéro » vide ordres, positions, valeurs, métriques, buy & hold, périodes et `sim_state`, et conserve les configurations (y compris optimisées) ;
     - redémarrage : comptes reconstitués à partir des ordres, positions depuis `positions`, pause / circuit breaker / plus haut / P&L des trades depuis la table `sim_state` ;
     - production : service `engine` dans `docker-compose.yml`.
+33. **Tornade : variables tirées seules** (pas les valeurs des indicateurs), plus une ligne « Calibrage » mesurée par l'écart apparié entre jumelles (significative si |écart moyen| > 2 erreurs-types des écarts).
+34. **Métriques (étape 8)** :
+    - écrites chaque heure par le moteur dans `metrics` (en marche comme en Hold) ; drawdown max calculé sur la valeur horaire avec le plus haut conservé (`metrics.peak_value`) ; un trade va de l'ouverture à la clôture complète de la position, ventes partielles comprises ; positions ouvertes comptées à part (`metrics.open_positions`) ;
+    - buy & hold valorisé net des frais de vente estimés, reliquat d'arrondi compris ; série horaire reconstituée à partir des clôtures 1 h ;
+    - tornade et synthèse calculées à la demande à partir de `metrics` (donc au rythme horaire), sans table supplémentaire ; tiers des variables numériques triés sur la valeur seule ;
+    - limite connue : comparer la pire et la meilleure option à 2 erreurs-types donne plus de faux positifs que 5 % quand une variable a beaucoup d'options ; une barre pleine reste à confirmer par sa stabilité dans le temps.
 
 ## 14. Plan de développement proposé
 

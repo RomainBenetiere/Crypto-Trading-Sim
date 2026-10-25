@@ -219,3 +219,22 @@ async def test_decisions_only_at_4h_close(setup) -> None:  # type: ignore[no-unt
     assert all(
         o.status is not OrderStatus.OPEN or o.created_at in boundaries for o in load_orders(conn)
     )
+
+
+async def test_metrics_written_every_hour_including_hold(setup) -> None:  # type: ignore[no-untyped-def]
+    from mcs.metrics import load_metrics
+
+    conn, clock, make_engine, _ = setup
+    conn.execute("UPDATE engine_state SET optimization_status = 'DONE'")
+    engine = make_engine()
+    await command(engine, Command.START)
+    await run_bars(engine, clock, 3)
+    metrics = load_metrics(conn)
+    assert sorted(metrics) == sorted(engine.sims)
+    for sim_id, m in metrics.items():
+        assert m.pnl_eur == engine.sims[sim_id].portfolio_value(engine.ctx) - 1000
+        assert m.bh_gap_eur is not None and m.open_positions == len(engine.sims[sim_id].positions)
+    await command(engine, Command.STOP)
+    before = conn.execute("SELECT MAX(updated_at) FROM metrics").fetchone()[0]
+    await run_bars(engine, clock, 1)
+    assert conn.execute("SELECT MAX(updated_at) FROM metrics").fetchone()[0] > before

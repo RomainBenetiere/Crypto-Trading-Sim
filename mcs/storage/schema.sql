@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS metrics (
     win_rate          TEXT,
     total_fees        TEXT    NOT NULL,
     bh_gap_eur        TEXT,
+    peak_value        TEXT,
+    open_positions    INTEGER NOT NULL DEFAULT 0,
     updated_at        INTEGER NOT NULL
 );
 

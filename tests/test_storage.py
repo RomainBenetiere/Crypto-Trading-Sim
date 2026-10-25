@@ -155,6 +155,8 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE engine_state DROP COLUMN basket_json;
         ALTER TABLE engine_state DROP COLUMN heartbeat_at;
         DROP TABLE sim_state;
+        ALTER TABLE metrics DROP COLUMN peak_value;
+        ALTER TABLE metrics DROP COLUMN open_positions;
         ALTER TABLE engine_state DROP COLUMN master_seed;
         PRAGMA user_version = 1;
         """

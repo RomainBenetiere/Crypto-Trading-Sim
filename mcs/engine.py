@@ -54,6 +54,14 @@ from mcs.live.state import (
 )
 from mcs.logging_setup import configure_logging
 from mcs.market_data import MINUTE_MS, Candle, floor_ts
+from mcs.metrics import (
+    SimMetrics,
+    buy_and_hold_value,
+    compute_metrics,
+    load_buy_and_hold,
+    load_metrics,
+    write_metrics,
+)
 from mcs.sampling import load_simulations
 from mcs.storage.db import connect, now_ms, transaction
 from mcs.storage.markets import selected_markets
@@ -113,6 +121,7 @@ class Engine:
         self.broker: PaperBroker | None = None
         self.ctx: LiveContext | None = None
         self.sims: dict[int, Simulation] = {}
+        self.metrics: dict[int, SimMetrics] = {}
         self.last_1h = self.last_4h = 0
 
     # --- Démarrage et état en mémoire -----------------------------------------------------
@@ -143,6 +152,7 @@ class Engine:
             self.conn, self.fees, self.books, rules={m: rules[m] for m in basket}
         )
         self.sims = {}
+        self.metrics = load_metrics(self.conn)
         for stored in load_simulations(self.conn):
             self.broker.open_account(stored.id, INITIAL_CAPITAL)
             sim = Simulation(
@@ -165,7 +175,7 @@ class Engine:
         log.info("%d simulations chargées sur %d paires.", len(self.sims), len(basket))
 
     def _clear_runtime(self) -> None:
-        self.broker, self.ctx, self.sims = None, None, {}
+        self.broker, self.ctx, self.sims, self.metrics = None, None, {}, {}
 
     # --- Commandes ------------------------------------------------------------------------
 
@@ -324,6 +334,7 @@ class Engine:
             if self.status is Status.RUNNING:
                 await self._hourly(now)
             self.write_portfolio_values(hour)
+            self.update_metrics(now)
         bar = floor_ts(now, "4h")
         if bar > self.last_4h:
             self.last_4h = bar
@@ -350,6 +361,26 @@ class Engine:
             await self.sims[sim_id].on_4h_close(now, self.ctx)
         self.sim_states.save(list(self.sims.values()), now)
         log.info("Clôture 4 h traitée en %.1f s.", (self.clock() - started) / 1000)
+
+    def update_metrics(self, now: int) -> None:
+        """Métriques horaires de chaque simulation (SPEC §6)."""
+        if self.broker is None or self.ctx is None:
+            return
+        markets = list(self.ctx.data.markets)
+        prices = {m: p for m in markets if (p := self.ctx.last_price(m)) is not None}
+        bh_value = buy_and_hold_value(load_buy_and_hold(self.conn), prices, self.fees.taker)
+        bh_pnl = bh_value - INITIAL_CAPITAL if bh_value is not None else None
+        for sim in self.sims.values():
+            self.metrics[sim.sim_id] = compute_metrics(
+                sim.sim_id,
+                sim.portfolio_value(self.ctx),
+                sim.trade_pnls,
+                self.broker.account(sim.sim_id).fees_paid,
+                len(sim.positions),
+                bh_pnl,
+                self.metrics.get(sim.sim_id),
+            )
+        write_metrics(self.conn, self.metrics.values(), now)
 
     def write_portfolio_values(self, ts: int) -> None:
         """Valeur de chaque portefeuille (positions nettes des frais de vente estimés)."""
