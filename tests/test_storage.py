@@ -149,6 +149,8 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE orders DROP COLUMN liquidity;
         ALTER TABLE orders DROP COLUMN reserved;
         ALTER TABLE positions DROP COLUMN state_json;
+        ALTER TABLE simulations DROP COLUMN draw_json;
+        ALTER TABLE engine_state DROP COLUMN master_seed;
         PRAGMA user_version = 1;
         """
     )

@@ -252,6 +252,14 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
 17. **Take profit** : ordre limite de vente posé dès l'entrée (frais maker), rempli quand une bougie 1 min a un plus haut strictement supérieur ; la quantité est bloquée et l'ordre est annulé avant toute sortie au marché. Partiel : 50 % au niveau X R, puis le reste suit le trailing (activé d'office ; sans trailing configuré, le stop remonte au prix d'entrée moyen).
 18. **Trailing Chandelier** : plus haut des 22 dernières bougies 4 h − k × ATR, k entre 2 et 4.
 19. **Choix d'implémentation (étape 4)** : ATR 4 h de période 14 pour les stops et trailings ; trailing ATR et % calculés depuis le plus haut atteint depuis l'entrée ; trailing Supertrend = ligne Supertrend des paramètres de la simulation si sa famille est Supertrend, sinon 10 / 3 ; un stop est déclenché quand le plus bas d'une bougie 1 min atteint son niveau ; sorties évaluées à chaque clôture 4 h dans l'ordre : retournement du filtre (si « bloquer et sortir »), signal inverse, durée max ; entrées classées par score décroissant.
+20. **Valeurs des indicateurs non tirées** (étape 5) : jumelle typique = valeurs typiques du §4 ; jumelle optimisée = résultat de l'optimiseur (étape 6), valeurs typiques en attendant. Le tirage porte sur les familles, la présence des confirmations, le filtre de fond (utilisation, type, action), les stops, sorties, exécution, règles de portefeuille, le poids principal et le seuil.
+21. **Poids des confirmations** : le reste (1 − poids principal) est réparti à parts égales entre les confirmations présentes.
+22. **Mise en œuvre du tirage** (`python -m mcs.sampling generate [--seed N] [--force]`) :
+    - variables par catégories équilibrées (écart ≤ 1) dans le sous-groupe où elles s'appliquent (ex. type de filtre parmi les configurations qui l'utilisent), mélangées indépendamment ;
+    - variables numériques : un hypercube latin par groupe de variables partageant la même condition, sur le sous-groupe concerné ; entiers répartis uniformément ; fractions arrondies à 4 décimales (risque par trade à 5), multiples à 3 ;
+    - renforcement tiré parmi 1 (non), 2 ou 3 entrées ; durée max tirée entre « aucune » et « limitée », puis 30 à 180 bougies ;
+    - simulations numérotées 2k − 1 (typique) et 2k (optimisée) pour la configuration k ; graine maîtresse dans `engine_state.master_seed`, graine propre à chaque simulation dérivée de la maîtresse ; tirage brut conservé dans `simulations.draw_json` (pour la tornade) ;
+    - génération refusée hors état « Non démarré », et si un plan existe sauf avec `--force`.
 
 ## 14. Plan de développement proposé
 

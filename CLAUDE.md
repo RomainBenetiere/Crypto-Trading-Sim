@@ -30,6 +30,7 @@ ruff check . && ruff format --check . && mypy mcs
 python -m mcs.collector markets          # caractéristiques des marchés, historique, volume 24 h
 python -m mcs.collector backfill         # historique des bougies (--markets, --intervals, --minute-days)
 python -m mcs.collector live             # collecte continue (REST + WebSocket)
+python -m mcs.sampling generate         # plan Monte-Carlo (--seed N, --force)
 python -m mcs.engine        # moteur de simulations (étape 7)
 streamlit run dashboard/app.py
 ```

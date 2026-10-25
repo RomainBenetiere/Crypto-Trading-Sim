@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS simulations (
     mode              TEXT    NOT NULL CHECK (mode IN ('typical', 'optimized')),
     family            TEXT    NOT NULL,
     config_json       TEXT    NOT NULL,
+    draw_json         TEXT    NOT NULL DEFAULT '{}',
     seed              INTEGER NOT NULL,
     validation_score  TEXT,
     created_at        INTEGER NOT NULL,
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS engine_state (
     optimization_status  TEXT    NOT NULL DEFAULT 'TODO'
                                  CHECK (optimization_status IN ('TODO', 'RUNNING', 'DONE')),
     optimized_at         INTEGER,
+    master_seed          INTEGER,
     started_at           INTEGER,
     active_ms            INTEGER NOT NULL DEFAULT 0,
     hold_ms              INTEGER NOT NULL DEFAULT 0,
