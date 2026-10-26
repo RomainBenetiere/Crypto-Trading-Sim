@@ -122,3 +122,20 @@ def test_consistency_tolerates_volume_rounding_and_needs_full_minutes(
     assert check_consistency(conn, "ETH-EUR", "1h", 0) == []  # écart d'arrondi toléré
     upsert_candles(conn, [Candle("ETH-EUR", "1h", 0, p, p, p, p, Decimal(100))])
     assert check_consistency(conn, "ETH-EUR", "1h", 0)[0].startswith("volume")
+
+
+async def test_live_older_history_is_spread_over_calls(
+    conn: sqlite3.Connection, fake_api: tuple[FakeBitvavo, respx.MockRouter], rest: BitvavoRest
+) -> None:
+    fake, _ = fake_api
+    fake.add_series("BTC-EUR", "1m", 0, 10 * 1440)
+    upsert_candles(conn, [make_candle("BTC-EUR", "1m", (10 * 1440 - 1) * M)])
+    now = 10 * 1440 * M
+    first = await sync_candles(conn, rest, "BTC-EUR", "1m", now, 0, max_older_pages=3)
+    assert first.older == 3 * 1440  # 3 pages seulement à ce passage
+    passes = 1
+    while count_candles(conn, "BTC-EUR", "1m") < 10 * 1440 and passes < 10:
+        await sync_candles(conn, rest, "BTC-EUR", "1m", now, 0, max_older_pages=3)
+        passes += 1
+    assert count_candles(conn, "BTC-EUR", "1m") == 10 * 1440
+    assert passes == 4  # 10 pages d'un jour, 3 par passage : 3 + 3 + 3 + 1

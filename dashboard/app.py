@@ -201,27 +201,42 @@ def kpis(summary: Any) -> None:
         fmt.signed_eur(summary.best_pnl),
         fmt.sim_label(summary.best_sim),
         delta_color="off",
+        delta_arrow="off",
     )
     cols[1].metric(
-        "P&L médian", fmt.signed_eur(summary.pnl_median), "sur l'ensemble", delta_color="off"
+        "P&L médian",
+        fmt.signed_eur(summary.pnl_median),
+        "sur l'ensemble",
+        delta_color="off",
+        delta_arrow="off",
     )
     cols[2].metric(
-        "Buy & hold", fmt.signed_eur(summary.bh_pnl), "1 000 € à poids égaux", delta_color="off"
+        "Buy & hold",
+        fmt.signed_eur(summary.bh_pnl),
+        "1 000 € à poids égaux",
+        delta_color="off",
+        delta_arrow="off",
     )
     cols[3].metric(
         "Battent le buy & hold",
         fmt.share(summary.beat_bh_share),
         f"{summary.beat_bh} / {summary.count}",
         delta_color="off",
+        delta_arrow="off",
     )
     cols[4].metric(
         "Optimisé − typique",
         fmt.signed_eur(summary.optimized_gap_mean),
         "écart moyen entre jumelles",
         delta_color="off",
+        delta_arrow="off",
     )
     cols[5].metric(
-        "Trades clôturés", fmt.number(summary.trades_mean, 1), "par simulation", delta_color="off"
+        "Trades clôturés",
+        fmt.number(summary.trades_mean, 1),
+        "par simulation",
+        delta_color="off",
+        delta_arrow="off",
     )
     if summary.preliminary:
         st.warning(
@@ -275,7 +290,8 @@ def value_chart(table: pd.DataFrame) -> None:
         legend={"orientation": "h", "y": -0.15},
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
+    st.plotly_chart(fig, width="stretch")
     st.caption(
         "Valeur horaire depuis le lancement, frais déduits et positions nettes des frais de vente "
         "estimés. Zones grisées : Hold ou interruption du moteur."
@@ -318,16 +334,16 @@ def tornado_chart(rows: list[Any], mean: float) -> None:
             ],
             hoverinfo="text",
         )
-    fig.add_vline(x=mean, line_color="#374151", line_width=1)
+    fig.add_vline(x=mean, line_color="#9ca3af", line_width=1)
     fig.update_layout(
-        barmode="overlay",
+        barmode="group",
         separators=", ",
         height=max(320, 26 * len(rows) + 80),
         margin={"l": 10, "r": 10, "t": 10, "b": 10},
         xaxis_title="P&L moyen (€)",
         legend={"orientation": "h", "y": -0.08},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption(
         "Écart de P&L moyen entre la pire et la meilleure option (variables par catégories) ou "
         "entre le tiers bas et le tiers haut (variables numériques), autour du P&L moyen. Barres "
@@ -364,7 +380,7 @@ def top5(table: pd.DataFrame) -> None:
         on_select="rerun",
         selection_mode="single-row",
         key="top5",
-        use_container_width=True,
+        width="stretch",
     )
     st.caption("Cliquez sur une simulation pour afficher ses positions.")
     picked = event.selection.rows if event and event.selection else []
@@ -420,7 +436,7 @@ def live_positions(sim_id: int) -> None:
                 }
             ),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
     else:
         st.info("Aucune position ouverte.")
@@ -462,7 +478,7 @@ def buy_and_hold_table() -> None:
             }
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         "1 000 € répartis à parts égales entre les paires du panier au lancement, frais d'achat "
@@ -513,7 +529,7 @@ def all_simulations(table: pd.DataFrame) -> None:
     shown.insert(4, "Filtre 1 j", view["Filtre 1 j"].to_numpy())
     shown.insert(5, "Trailing", view["Trailing"].to_numpy())
     shown.insert(6, "Take profit", view["Take profit"].to_numpy())
-    st.dataframe(shown, hide_index=True, use_container_width=True, height=420)
+    st.dataframe(shown, hide_index=True, width="stretch", height=420)
     st.caption(f"{len(view)} simulations affichées.")
 
 
@@ -587,7 +603,7 @@ def tab_indicators() -> None:
     shown["Seuil du score"] = shown["Seuil du score"].map(
         lambda v: "—" if pd.isna(v) else fmt.number(v, 3)
     )
-    st.dataframe(shown, hide_index=True, use_container_width=True, height=560)
+    st.dataframe(shown, hide_index=True, width="stretch", height=560)
     st.caption(
         f"{len(view)} lignes · {int(view['differs'].sum())} valeurs optimisées différentes du typique."
     )
@@ -623,7 +639,7 @@ def tab_markets() -> None:
     edited = st.data_editor(
         display,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         key="markets_editor",
         disabled=[c for c in display.columns if c != "Prendre en compte"],
         column_config={"Prendre en compte": st.column_config.CheckboxColumn()},

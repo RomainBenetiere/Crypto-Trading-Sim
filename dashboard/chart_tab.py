@@ -102,7 +102,7 @@ def mosaic(conn: Any, markets: list[str], days: int, version: tuple[Any, ...]) -
     )
     fig.update_annotations(font_size=12)
     event = st.plotly_chart(
-        fig, use_container_width=True, on_select="rerun", selection_mode="points", key="tiles_chart"
+        fig, width="stretch", on_select="rerun", selection_mode="points", key="tiles_chart"
     )
     points = event.selection.points if event and event.selection else []
     if points:
@@ -312,9 +312,10 @@ def figure(
         legend={"orientation": "h", "y": 1.02, "x": 0},
         margin={"l": 10, "r": 10, "t": 30, "b": 10},
     )
+    fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
     if float(frame["close"].iloc[-1]) < 0.01:
         fig.update_yaxes(exponentformat="e", row=1, col=1)
-    st.plotly_chart(fig, use_container_width=True, key="detail_chart")
+    st.plotly_chart(fig, width="stretch", key="detail_chart")
 
 
 def add_panel(

@@ -376,6 +376,8 @@ class Engine:
         await asyncio.to_thread(self.ctx.warm, [s.config for s in self.sims.values()])
         for sim_id in sorted(self.sims):
             await self.sims[sim_id].on_4h_close(now, self.ctx)
+            # Rend la main à la boucle : le WebSocket répond aux pings pendant le cycle.
+            await asyncio.sleep(0)
         self.sim_states.save(list(self.sims.values()), now)
         log.info("Clôture 4 h traitée en %.1f s.", (self.clock() - started) / 1000)
 

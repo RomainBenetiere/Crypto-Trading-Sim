@@ -48,6 +48,9 @@ TICKER_STALE_MS = 120_000
 MARKETS_REFRESH_MS = DAY_MS
 SPREAD_UPDATE_MS = INTERVAL_MS["1h"]
 VOLUME_TOLERANCE = Decimal("1e-9")
+# Collecte continue : au plus 5 pages d'historique ancien par paire et par minute
+# (5 × 1 440 bougies 1 min = 5 jours) ; les 90 jours initiaux se rattrapent en ~20 min.
+LIVE_OLDER_PAGES = 5
 SPREAD_MIN_SAMPLES = (
     30  # après un redémarrage, ne pas écraser l'estimation avec trop peu de relevés
 )
@@ -75,10 +78,14 @@ async def sync_candles(
     interval: str,
     now: int,
     start: int | None = None,
+    max_older_pages: int | None = None,
 ) -> SyncResult:
     """Complète la base pour (market, interval) : d'abord les bougies récentes manquantes
     (de la plus récente stockée jusqu'à maintenant, trous compris), puis l'historique plus
-    ancien que la plus ancienne stockée, jusqu'à `start` ou au début de l'historique."""
+    ancien que la plus ancienne stockée, jusqu'à `start` ou au début de l'historique.
+
+    `max_older_pages` limite l'historique ancien récupéré par appel : en collecte continue,
+    un long rattrapage est étalé sur plusieurs minutes au lieu de bloquer le cycle."""
     end = floor_ts(now, interval)  # `end` exclu : la bougie en cours n'est jamais demandée
     if start is None and interval != "1d":
         # Le début de l'historique journalier borne la recherche : sans cette borne, la
@@ -94,8 +101,12 @@ async def sync_candles(
     else:
         older_end = end
     if start is None or older_end > start:
+        pages = 0
         async for page in rest.iter_candles_backward(market, interval, end=older_end, start=start):
             older += upsert_candles(conn, page)
+            pages += 1
+            if max_older_pages is not None and pages >= max_older_pages:
+                break
     return SyncResult(market, interval, recent, older)
 
 
@@ -229,6 +240,7 @@ class LiveCollector:
                     interval,
                     now,
                     history_start(interval, now, self.minute_days),
+                    max_older_pages=LIVE_OLDER_PAGES,
                 )
                 self._synced_end[(market, interval)] = end
                 if interval != "1m":
