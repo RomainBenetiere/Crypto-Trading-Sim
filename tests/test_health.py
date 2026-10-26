@@ -24,16 +24,23 @@ def test_read_logs_and_log_checks(tmp_path: Path) -> None:
             "2026-10-25 10:00:02,001 INFO    mcs.bitvavo.ws : WebSocket reconnecté après 2.0 s de coupure.",  # noqa: E501
             "2026-10-25 10:05:00,001 INFO    mcs.broker.paper : Sim 3 : ordre buy X refusé (below_minimum : x).",  # noqa: E501
             "2026-10-25 10:06:00,001 ERROR   mcs.engine : Échec du cycle, nouvel essai à la minute suivante.",  # noqa: E501
+            "2026-10-25 10:07:05,001 WARNING mcs.engine : Collecte impossible (ConnectError : [Errno -3] Temporary failure in name resolution), nouvel essai à la minute suivante.",  # noqa: E501
+            "2026-10-25 10:08:05,001 WARNING mcs.engine : Clôture 4 h reportée : bougies non récupérées (collecte en échec).",  # noqa: E501
             "ligne sans horodatage",
         ],
     )
     write_log(tmp_path / "engine.log.1", ["2020-01-01 00:00:00,000 ERROR   mcs.engine : ancien"])
     lines = read_logs(tmp_path, since=0)
-    assert len(lines) == 5 and lines[0].message == "ancien"
+    assert len(lines) == 7 and lines[0].message == "ancien"
     recent = read_logs(tmp_path, since=lines[1].ts)
     checks = {c.name: c for c in check_logs(recent)}
     assert checks["WebSocket"].detail == "1 coupure(s), 1 reconnexion(s)"
     assert checks["Ordres refusés"].detail == "below_minimum 1"
+    assert checks["Collecte REST"].level is Level.WARN
+    assert (
+        checks["Collecte REST"].detail.startswith("1 minute(s) en échec")
+        and "1 clôture" in checks["Collecte REST"].detail
+    )
     assert checks["Erreurs"].level is Level.FAIL and "mcs.engine 1" in checks["Erreurs"].detail
 
 

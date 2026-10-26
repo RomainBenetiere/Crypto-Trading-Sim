@@ -29,8 +29,10 @@ from collections.abc import Callable, Mapping
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from mcs.backtest import Dataset, load_dataset
-from mcs.bitvavo.rest import BitvavoRest
+from mcs.bitvavo.rest import BitvavoError, BitvavoRest
 from mcs.bitvavo.ws import TickerState
 from mcs.broker.base import Liquidity, Side
 from mcs.broker.book import BookProvider, CachedBookProvider, max_quantity_for_budget, walk_quantity
@@ -329,12 +331,14 @@ class Engine:
         if changed:
             self.sim_states.save(changed, now)
 
-    async def on_tick(self, now: int) -> None:
-        """Chaque minute, après la collecte des bougies clôturées."""
+    async def on_tick(self, now: int, data_ok: bool = True) -> None:
+        """Chaque minute, après la collecte des bougies clôturées. `data_ok` est faux si la
+        collecte a échoué (coupure réseau) : la clôture 4 h est alors reportée, jamais prise
+        sur des bougies incomplètes ; le reste (valeurs, expirations) continue."""
         async with self.lock:
-            await self._on_tick(now)
+            await self._on_tick(now, data_ok)
 
-    async def _on_tick(self, now: int) -> None:
+    async def _on_tick(self, now: int, data_ok: bool = True) -> None:
         heartbeat(self.conn, now)
         if self.broker is None or self.ctx is None:
             return
@@ -354,6 +358,9 @@ class Engine:
             self.update_metrics(now)
         bar = floor_ts(now, "4h")
         if bar > self.last_4h:
+            if not data_ok:
+                log.warning("Clôture 4 h reportée : bougies non récupérées (collecte en échec).")
+                return
             self.last_4h = bar
             if self.status is Status.RUNNING:
                 await self._four_hourly(now)
@@ -464,9 +471,22 @@ async def run_engine() -> None:
         try:
             while True:
                 now = now_ms()
+                data_ok = True
                 try:
                     await collector.tick(now)
-                    await engine.on_tick(now)
+                except (httpx.TransportError, BitvavoError) as exc:
+                    # Coupure réseau ou DNS : une ligne, sans trace complète à chaque minute.
+                    data_ok = False
+                    log.warning(
+                        "Collecte impossible (%s : %s), nouvel essai à la minute suivante.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                except Exception:
+                    data_ok = False
+                    log.exception("Échec de la collecte, nouvel essai à la minute suivante.")
+                try:
+                    await engine.on_tick(now, data_ok)
                 except Exception:
                     log.exception("Échec du cycle, nouvel essai à la minute suivante.")
                 next_tick = floor_ts(now_ms(), "1m") + MINUTE_MS + TICK_DELAY_MS

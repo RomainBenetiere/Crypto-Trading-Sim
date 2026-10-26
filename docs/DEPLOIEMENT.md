@@ -77,6 +77,26 @@ Critères de fin de rodage : 7 jours consécutifs, aucune anomalie dans le rappo
 épreuves réussies, cycles 4 h de moins de 60 s. Les simulations lancées au début du rodage
 sont conservées (décision 39), sauf problème imposant une remise à zéro.
 
+## Pannes réseau et DNS
+
+Une coupure réseau ou DNS du serveur (« Temporary failure in name resolution » dans
+`logs/engine.log`) est encaissée par le moteur : une ligne « Collecte impossible » par
+minute, clôtures 4 h reportées jusqu'au retour des bougies, valeurs horaires toujours
+écrites ; le rapport de santé les compte (« Réseau · Collecte REST »). Si elles se répètent,
+fiabiliser le DNS du conteneur LXC (Proxmox : onglet DNS du conteneur) ou de Docker, par
+exemple dans `docker-compose.yml` :
+
+```yaml
+x-common: &common
+  dns: [1.1.1.1, 9.9.9.9]
+```
+
+Tester la résolution depuis le moteur :
+
+```bash
+docker compose exec engine python -c "import socket; print(socket.gethostbyname('api.bitvavo.com'))"
+```
+
 ## 6. Mettre à jour
 
 ```bash

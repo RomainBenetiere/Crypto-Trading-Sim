@@ -295,6 +295,17 @@ def check_logs(logs: Sequence[LogLine]) -> list[Check]:
             "Réseau", "WebSocket", level, f"{disconnects} coupure(s), {reconnects} reconnexion(s)"
         )
     )
+    outages = [line for line in logs if line.message.startswith("Collecte impossible")]
+    deferred = sum("Clôture 4 h reportée" in line.message for line in logs)
+    checks.append(
+        Check(
+            "Réseau",
+            "Collecte REST",
+            Level.OK if not outages else Level.WARN,
+            f"{len(outages)} minute(s) en échec (réseau / DNS), {deferred} clôture(s) "
+            "4 h reportée(s)",
+        )
+    )
     limits = sum("Limite Bitvavo atteinte" in line.message for line in logs)
     checks.append(
         Check(

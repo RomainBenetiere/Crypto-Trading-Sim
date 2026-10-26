@@ -238,3 +238,28 @@ async def test_metrics_written_every_hour_including_hold(setup) -> None:  # type
     before = conn.execute("SELECT MAX(updated_at) FROM metrics").fetchone()[0]
     await run_bars(engine, clock, 1)
     assert conn.execute("SELECT MAX(updated_at) FROM metrics").fetchone()[0] > before
+
+
+async def test_4h_close_deferred_while_collection_fails(setup) -> None:  # type: ignore[no-untyped-def]
+    conn, clock, make_engine, _ = setup
+    conn.execute("UPDATE engine_state SET optimization_status = 'DONE'")
+    engine = make_engine()
+    await command(engine, Command.START)
+    calls: list[int] = []
+    for sim in engine.sims.values():
+        original = sim.on_4h_close
+
+        async def spy(now, ctx, original=original):  # type: ignore[no-untyped-def]
+            calls.append(now)
+            await original(now, ctx)
+
+        sim.on_4h_close = spy  # type: ignore[method-assign]
+    next_bar = clock.now - clock.now % BAR + BAR
+    clock.now = next_bar + 3_000
+    await engine.on_tick(clock.now, data_ok=False)  # coupure réseau à la clôture
+    assert calls == []
+    hours = conn.execute("SELECT COUNT(DISTINCT ts) FROM portfolio_values").fetchone()[0]
+    assert hours == 1  # les valeurs horaires sont quand même écrites
+    clock.now += 60_000
+    await engine.on_tick(clock.now, data_ok=True)  # réseau revenu : clôture traitée
+    assert len(calls) == len(engine.sims)
