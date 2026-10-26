@@ -182,13 +182,16 @@ def check_data(
     # Heures sans aucune bougie 1 min sur toutes les paires : coupure de collecte (une paire
     # peu liquide peut, elle, rester une heure sans transaction).
     start, end = floor_ts(max(since, now - 7 * 24 * HOUR), "1h"), floor_ts(now, "1h") - HOUR
-    hours_with_data = {
-        r[0]
-        for r in conn.execute(
-            "SELECT DISTINCT ts - ts % ? FROM candles WHERE interval = '1m' AND ts >= ? AND ts < ?",
-            (HOUR, start, end),
+    hours_with_data: set[int] = set()
+    for market in markets:  # par paire : la clé primaire (market, interval, ts) sert d'index
+        hours_with_data.update(
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT ts - ts % ? FROM candles "
+                "WHERE market = ? AND interval = '1m' AND ts >= ? AND ts < ?",
+                (HOUR, market, start, end),
+            )
         )
-    }
     missing = [h for h in range(start, end, HOUR) if h not in hours_with_data]
     level = Level.OK if not missing else Level.FAIL if len(missing) > 2 else Level.WARN
     checks.append(

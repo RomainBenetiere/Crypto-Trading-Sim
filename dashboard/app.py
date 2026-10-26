@@ -9,6 +9,7 @@ métriques horaires écrites par le moteur. Accès : réseau local uniquement (d
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from dashboard import fmt, queries  # noqa: E402
+from dashboard import chart_tab, fmt, queries  # noqa: E402
 from mcs.config import Settings, load_settings  # noqa: E402
 from mcs.health import Level, run_checks  # noqa: E402
 from mcs.live.state import Command  # noqa: E402
@@ -646,6 +647,24 @@ def tab_markets() -> None:
         )
 
 
+# --- Onglet « Graphiques » ----------------------------------------------------------------
+
+
+def tab_charts() -> None:
+    info = queries.engine_info(ro())
+    state = ro().execute("SELECT basket_json FROM engine_state").fetchone()[0]
+    if info.status != "NOT_STARTED" and state:
+        markets = json.loads(state)
+    else:
+        markets = [
+            r[0]
+            for r in ro().execute(
+                "SELECT market FROM markets WHERE in_basket = 1 AND selected = 1 ORDER BY market"
+            )
+        ]
+    chart_tab.render(ro(), markets, data_version())
+
+
 # --- Santé du moteur -----------------------------------------------------------------------
 
 
@@ -675,8 +694,8 @@ def main() -> None:
     )
     control_bar()
     health_panel()
-    follow, indicators, markets = st.tabs(
-        ["Suivi des simulations", "Paramètres des indicateurs", "Marchés du panier"]
+    follow, indicators, markets, graphs = st.tabs(
+        ["Suivi des simulations", "Paramètres des indicateurs", "Marchés du panier", "Graphiques"]
     )
     with follow:
         tab_follow_up()
@@ -684,6 +703,8 @@ def main() -> None:
         tab_indicators()
     with markets:
         tab_markets()
+    with graphs:
+        tab_charts()
 
 
 main()

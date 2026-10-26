@@ -163,6 +163,7 @@ def test_app_not_started_and_optimize_button(app_db: Path) -> None:
         "Suivi des simulations",
         "Paramètres des indicateurs",
         "Marchés du panier",
+        "Graphiques",
     ]
     assert any("**Statut** : Non démarré" in m.value for m in at.markdown)
     assert {b.label for b in at.button} >= {"Optimiser les indicateurs", "Valider la sélection"}
