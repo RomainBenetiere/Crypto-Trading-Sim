@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -74,6 +74,69 @@ MIGRATIONS: dict[int, str] = {
         replaced_at       INTEGER
     );
     """,
+    9: """
+    CREATE TABLE IF NOT EXISTS production_state (
+        id               INTEGER PRIMARY KEY CHECK (id = 1),
+        mode             TEXT    NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'shadow')),
+        started_at       INTEGER,
+        capital_applied  TEXT,
+        balance_json     TEXT,
+        balance_at       INTEGER,
+        balance_error    TEXT,
+        updated_at       INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS production_orders (
+        id            INTEGER PRIMARY KEY,
+        sim_id        INTEGER NOT NULL,
+        market        TEXT    NOT NULL,
+        order_type    TEXT    NOT NULL CHECK (order_type IN ('market', 'limit')),
+        side          TEXT    NOT NULL CHECK (side IN ('buy', 'sell')),
+        status        TEXT    NOT NULL CHECK (status IN ('open', 'filled', 'cancelled', 'expired')),
+        price         TEXT,
+        quantity      TEXT    NOT NULL,
+        notional      TEXT,
+        fee           TEXT,
+        liquidity     TEXT    CHECK (liquidity IN ('maker', 'taker')),
+        reserved      TEXT,
+        reason        TEXT    NOT NULL,
+        book_bid      TEXT,
+        book_ask      TEXT,
+        created_at    INTEGER NOT NULL,
+        expires_at    INTEGER,
+        filled_at     INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS production_positions (
+        id               INTEGER PRIMARY KEY,
+        sim_id           INTEGER NOT NULL,
+        market           TEXT    NOT NULL,
+        lots             INTEGER NOT NULL,
+        quantity         TEXT    NOT NULL,
+        avg_entry_price  TEXT    NOT NULL,
+        invested_cost    TEXT    NOT NULL,
+        buy_fees         TEXT    NOT NULL,
+        stop             TEXT,
+        trailing         TEXT,
+        take_profit      TEXT,
+        state_json       TEXT    NOT NULL DEFAULT '{}',
+        opened_at        INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        UNIQUE (sim_id, market)
+    );
+
+    CREATE TABLE IF NOT EXISTS production_sim_state (
+        sim_id      INTEGER PRIMARY KEY,
+        state_json  TEXT    NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS production_values (
+        ts           INTEGER PRIMARY KEY,
+        total_value  TEXT    NOT NULL,
+        cash         TEXT    NOT NULL
+    ) WITHOUT ROWID;
+    """,
 }
 BUSY_TIMEOUT_MS = 30_000
 NETWORK_FILESYSTEMS = frozenset(
@@ -128,6 +191,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             BEGIN IMMEDIATE;
             {script}
             INSERT OR IGNORE INTO engine_state (id, updated_at) VALUES (1, {now_ms()});
+            INSERT OR IGNORE INTO production_state (id, updated_at) VALUES (1, {now_ms()});
             PRAGMA user_version = {SCHEMA_VERSION};
             COMMIT;
             """

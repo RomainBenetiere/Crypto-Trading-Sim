@@ -105,3 +105,22 @@ docker compose up -d --build
 ```
 
 Le schéma de la base est migré automatiquement au démarrage.
+
+## 7. Mode production : ombre
+
+L'onglet « Production » du dashboard permet de choisir un scénario parmi les 5 meilleures simulations, puis de démarrer le mode ombre : le scénario tourne sur son propre portefeuille (300 € par défaut), ordres calculés au carnet réel mais **jamais envoyés**. L'ombre ne tourne que lorsque les simulations sont en marche.
+
+Pour afficher le solde réel du compte (facultatif) :
+
+1. Sur Bitvavo : *Paramètres → API → Créer une clé*, cocher **uniquement « Consulter »** (ni « Trader », ni « Retirer ») ; restreindre si possible à l'IP publique du serveur.
+2. Sur le serveur, dans `~/Crypto-Trading-Sim/.env` :
+   ```
+   BITVAVO_API_KEY=...
+   BITVAVO_API_SECRET=...
+   ```
+3. Redémarrer le moteur :
+   ```bash
+   docker compose up -d engine
+   ```
+
+Le solde est lu toutes les 5 minutes tant que le mode ombre est actif. La clé ne quitte jamais le `.env` (ni base, ni journaux, ni dashboard).

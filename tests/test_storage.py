@@ -36,6 +36,11 @@ EXPECTED_TABLES = {
     "commands",
     "sim_state",
     "production_choices",
+    "production_state",
+    "production_orders",
+    "production_positions",
+    "production_sim_state",
+    "production_values",
 }
 
 

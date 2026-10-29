@@ -203,3 +203,67 @@ CREATE TABLE IF NOT EXISTS production_choices (
     chosen_at         INTEGER NOT NULL,
     replaced_at       INTEGER
 );
+
+-- Mode ombre (SPEC §15, palier 2) : portefeuille du scénario choisi, ordres calculés mais
+-- jamais envoyés, solde réel lu en lecture seule. Tables hors remise à zéro des simulations.
+CREATE TABLE IF NOT EXISTS production_state (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    mode             TEXT    NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'shadow')),
+    started_at       INTEGER,
+    capital_applied  TEXT,
+    balance_json     TEXT,
+    balance_at       INTEGER,
+    balance_error    TEXT,
+    updated_at       INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS production_orders (
+    id            INTEGER PRIMARY KEY,
+    sim_id        INTEGER NOT NULL,
+    market        TEXT    NOT NULL,
+    order_type    TEXT    NOT NULL CHECK (order_type IN ('market', 'limit')),
+    side          TEXT    NOT NULL CHECK (side IN ('buy', 'sell')),
+    status        TEXT    NOT NULL CHECK (status IN ('open', 'filled', 'cancelled', 'expired')),
+    price         TEXT,
+    quantity      TEXT    NOT NULL,
+    notional      TEXT,
+    fee           TEXT,
+    liquidity     TEXT    CHECK (liquidity IN ('maker', 'taker')),
+    reserved      TEXT,
+    reason        TEXT    NOT NULL,
+    book_bid      TEXT,
+    book_ask      TEXT,
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER,
+    filled_at     INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS production_positions (
+    id               INTEGER PRIMARY KEY,
+    sim_id           INTEGER NOT NULL,
+    market           TEXT    NOT NULL,
+    lots             INTEGER NOT NULL,
+    quantity         TEXT    NOT NULL,
+    avg_entry_price  TEXT    NOT NULL,
+    invested_cost    TEXT    NOT NULL,
+    buy_fees         TEXT    NOT NULL,
+    stop             TEXT,
+    trailing         TEXT,
+    take_profit      TEXT,
+    state_json       TEXT    NOT NULL DEFAULT '{}',
+    opened_at        INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE (sim_id, market)
+);
+
+CREATE TABLE IF NOT EXISTS production_sim_state (
+    sim_id      INTEGER PRIMARY KEY,
+    state_json  TEXT    NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS production_values (
+    ts           INTEGER PRIMARY KEY,
+    total_value  TEXT    NOT NULL,
+    cash         TEXT    NOT NULL
+) WITHOUT ROWID;

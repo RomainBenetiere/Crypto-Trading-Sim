@@ -1,4 +1,5 @@
-"""Mode production, palier 1 (SPEC §15) : choix du scénario, sans aucun ordre réel.
+"""Mode production (SPEC §15) : choix du scénario (palier 1) et mode ombre (palier 2), sans
+aucun ordre réel.
 
 Le scénario choisi parmi les meilleures simulations est figé dans `production_choices`
 (copie de sa configuration) ; un nouveau choix remplace le précédent, l'historique est gardé.
@@ -8,18 +9,98 @@ minimum d'ordre du marché (5 € sur Bitvavo) quand l'échelle les fait passer 
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
+from enum import StrEnum
 
 from mcs.metrics import INITIAL_CAPITAL, METRICS
 from mcs.storage.db import transaction
 
 DEFAULT_CAPITAL = Decimal(300)
+# Identifiant du portefeuille de production dans les tables `production_*` (colonne sim_id).
+PRODUCTION_SIM_ID = 0
 # Minimum d'ordre courant de Bitvavo, pour l'affichage ; les ordres utiliseront celui de chaque
 # marché (`markets.min_order_quote`).
 DISPLAY_MIN_ORDER = Decimal(5)
 CENT = Decimal("0.01")
+
+
+class Mode(StrEnum):
+    OFF = "off"
+    SHADOW = "shadow"
+
+
+MODE_LABELS = {Mode.OFF: "Arrêté", Mode.SHADOW: "Ombre (aucun ordre envoyé)"}
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionState:
+    mode: Mode
+    started_at: int | None
+    capital_applied: Decimal | None
+    balances: dict[str, tuple[Decimal, Decimal]] | None  # symbole → (disponible, en ordre)
+    balance_at: int | None
+    balance_error: str | None
+
+
+def read_state(conn: sqlite3.Connection) -> ProductionState:
+    row = conn.execute("SELECT * FROM production_state WHERE id = 1").fetchone()
+    balances = None
+    if row["balance_json"] is not None:
+        balances = {
+            symbol: (Decimal(available), Decimal(in_order))
+            for symbol, (available, in_order) in json.loads(row["balance_json"]).items()
+        }
+    return ProductionState(
+        mode=Mode(row["mode"]),
+        started_at=row["started_at"],
+        capital_applied=_dec(row["capital_applied"]),
+        balances=balances,
+        balance_at=row["balance_at"],
+        balance_error=row["balance_error"],
+    )
+
+
+def set_mode(conn: sqlite3.Connection, mode: Mode, now: int) -> None:
+    """Écrit par le dashboard ; le moteur applique le changement dans les 2 s."""
+    if mode is Mode.SHADOW and active_choice(conn) is None:
+        raise ValueError("Choisissez d'abord un scénario.")
+    conn.execute(
+        """UPDATE production_state SET mode = ?, updated_at = ?,
+               started_at = CASE WHEN ? = 'off' THEN NULL ELSE COALESCE(started_at, ?) END
+           WHERE id = 1""",
+        (mode, now, mode, now),
+    )
+
+
+def set_capital_applied(conn: sqlite3.Connection, capital: Decimal, now: int) -> None:
+    conn.execute(
+        "UPDATE production_state SET capital_applied = ?, updated_at = ? WHERE id = 1",
+        (capital, now),
+    )
+
+
+def record_balances(
+    conn: sqlite3.Connection,
+    balances: dict[str, tuple[Decimal, Decimal]] | None,
+    error: str | None,
+    now: int,
+) -> None:
+    """Dernier solde réel lu (montants seulement, jamais la clé) ou erreur de lecture."""
+    if balances is None:
+        conn.execute(
+            "UPDATE production_state SET balance_error = ?, updated_at = ? WHERE id = 1",
+            (error, now),
+        )
+        return
+    payload = json.dumps({s: [str(a), str(o)] for s, (a, o) in sorted(balances.items())})
+    conn.execute(
+        """UPDATE production_state SET balance_json = ?, balance_at = ?, balance_error = NULL,
+               updated_at = ? WHERE id = 1""",
+        (payload, now, now),
+    )
 
 
 @dataclass(frozen=True, slots=True)

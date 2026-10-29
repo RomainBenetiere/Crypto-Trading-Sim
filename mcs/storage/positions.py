@@ -1,4 +1,5 @@
-"""Accès à la table `positions` (une ligne par simulation et par paire détenue)."""
+"""Accès à la table `positions` (une ligne par simulation et par paire détenue), ou
+`production_positions` pour le mode production."""
 
 from __future__ import annotations
 
@@ -9,10 +10,14 @@ from decimal import Decimal
 from mcs.risk.position import Position
 from mcs.storage.db import transaction
 
+POSITION_TABLES = frozenset({"positions", "production_positions"})
+
 
 class SqlitePositionStore:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+    def __init__(self, conn: sqlite3.Connection, table: str = "positions") -> None:
+        if table not in POSITION_TABLES:
+            raise ValueError(f"Table de positions inconnue : {table}")
+        self.conn, self.table = conn, table
 
     def save(self, sim_id: int, position: Position, now: int) -> None:
         state = {
@@ -28,8 +33,8 @@ class SqlitePositionStore:
         }
         with transaction(self.conn):
             self.conn.execute(
-                """
-                INSERT INTO positions (sim_id, market, lots, quantity, avg_entry_price,
+                f"""
+                INSERT INTO {self.table} (sim_id, market, lots, quantity, avg_entry_price,
                     invested_cost, buy_fees, stop, trailing, take_profit, state_json,
                     opened_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -50,11 +55,13 @@ class SqlitePositionStore:
             )  # fmt: skip
 
     def delete(self, sim_id: int, market: str) -> None:
-        self.conn.execute("DELETE FROM positions WHERE sim_id = ? AND market = ?", (sim_id, market))
+        self.conn.execute(
+            f"DELETE FROM {self.table} WHERE sim_id = ? AND market = ?", (sim_id, market)
+        )
 
     def load(self, sim_id: int) -> dict[str, Position]:
         positions = {}
-        for row in self.conn.execute("SELECT * FROM positions WHERE sim_id = ?", (sim_id,)):
+        for row in self.conn.execute(f"SELECT * FROM {self.table} WHERE sim_id = ?", (sim_id,)):
             state = json.loads(row["state_json"])
             positions[row["market"]] = Position(
                 market=row["market"],

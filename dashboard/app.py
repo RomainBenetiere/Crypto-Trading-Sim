@@ -44,6 +44,7 @@ from mcs.metrics import (  # noqa: E402
     tornado,
 )
 from mcs.storage.db import connect, now_ms  # noqa: E402
+from mcs.storage.orders import load_orders  # noqa: E402
 
 PRIMARY, MUTED, BH_COLOR = "#2f6fd6", "#a7b3c6", "#6b7280"
 TOP_COLORS = ["#2f6fd6", "#e07a1f", "#2a9d8f", "#c2417a", "#7b61c9"]
@@ -448,11 +449,15 @@ def sim_detail(sim_id: int, sim: pd.Series) -> None:
 
 
 @st.fragment(run_every=60)
-def live_positions(sim_id: int) -> None:
+def live_positions(sim_id: int, initial: float | None = None) -> None:
+    """Positions d'une simulation ; avec `initial` (capital engagé), le portefeuille ombre."""
     conn = ro()
     prices = latest_prices(conn)
     taker = settings().fee_taker
-    details = positions_detail(conn, sim_id, prices, taker)
+    shadow = initial is not None
+    details = positions_detail(
+        conn, sim_id, prices, taker, "production_positions" if shadow else "positions"
+    )
     if details:
         st.dataframe(
             pd.DataFrame(
@@ -477,12 +482,18 @@ def live_positions(sim_id: int) -> None:
         )
     else:
         st.info("Aucune position ouverte.")
-    cash = cash_balance(conn, sim_id)
+    cash = (
+        cash_balance(conn, sim_id, Decimal(str(initial)), "production_orders")
+        if initial is not None
+        else cash_balance(conn, sim_id)
+    )
     in_positions = sum((d.value or 0 for d in details), 0)
     sell_fees = sum((d.sell_fees_estimate or 0 for d in details), 0)
+    total = cash + in_positions - sell_fees
+    gain = f" · P&L **{fmt.signed_eur(total - Decimal(str(initial)))}**" if shadow else ""
     st.markdown(
-        f"Valeur totale **{fmt.eur(cash + in_positions - sell_fees)}** · en positions "
-        f"**{fmt.eur(in_positions)}** · liquidités **{fmt.eur(cash)}**"
+        f"Valeur totale **{fmt.eur(total)}** · en positions "
+        f"**{fmt.eur(in_positions)}** · liquidités **{fmt.eur(cash)}**{gain}"
     )
     updated = conn.execute("SELECT MAX(ts) FROM latest_prices").fetchone()[0]
     st.caption(
@@ -757,15 +768,15 @@ SCALE_EXAMPLES = (Decimal(40), Decimal(10))
 def tab_production() -> None:
     st.subheader("Mode production")
     st.info(
-        "Palier 1 : choix du scénario uniquement. **Aucun ordre réel n'est passé** ; le "
-        "scénario retenu servira au mode « ombre » puis aux ordres réels, chacun activé "
-        "séparément."
+        "Palier 2 : choix du scénario et mode « ombre ». **Aucun ordre réel n'est passé** ; "
+        "les ordres réels (palier 3) seront activés séparément, après validation."
     )
     current = production.active_choice(ro())
     if current is None:
         st.markdown("Aucun scénario choisi pour l'instant.")
     else:
         production_summary(current)
+        shadow_section(current)
     table = simulations(data_version())
     if table.empty:
         st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
@@ -848,6 +859,131 @@ def production_summary(choice: production.Choice) -> None:
         f"{fmt.pct(pnl, signed=True)}, drawdown max {fmt.pct(drawdown)}, "
         f"{choice.closed_trades or 0} trades. Configuration figée ({len(draw)} paramètres tirés)."
     )
+
+
+def shadow_section(choice: production.Choice) -> None:
+    conn = ro()
+    state = production.read_state(conn)
+    running = queries.engine_info(conn).status == "RUNNING"
+    shadow = state.mode is production.Mode.SHADOW
+    st.markdown("#### Mode ombre")
+    label = production.MODE_LABELS[state.mode]
+    if shadow:
+        label += f" depuis le {fmt.timestamp(state.started_at)}"
+        if not running:
+            label += " — en pause tant que les simulations ne tournent pas"
+    st.markdown(f"**État** : {label}")
+    st.caption(
+        "Le scénario tourne sur son propre portefeuille, au capital engagé : ordres calculés "
+        "et exécutés au carnet réel Bitvavo, comme le ferait le mode réel, mais jamais "
+        "envoyés. Il suit l'état des simulations (Hold compris)."
+    )
+    if shadow:
+        if st.button("Arrêter l'ombre", key="btn_shadow_off"):
+            production.set_mode(rw(), production.Mode.OFF, now_ms())
+            st.rerun()
+    elif st.button("Démarrer l'ombre", key="btn_shadow_on", type="primary"):
+        production.set_mode(rw(), production.Mode.SHADOW, now_ms())
+        st.rerun()
+    if shadow or conn.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]:
+        st.markdown("##### Portefeuille ombre")
+        live_positions(production.PRODUCTION_SIM_ID, float(choice.capital))
+        shadow_values()
+        shadow_orders()
+    real_balance(state, choice.capital)
+
+
+def shadow_values() -> None:
+    rows = ro().execute("SELECT ts, total_value FROM production_values ORDER BY ts").fetchall()
+    if len(rows) < 2:
+        return
+    figure = go.Figure(
+        go.Scatter(
+            x=[paris(r["ts"]) for r in rows],
+            y=[float(r["total_value"]) for r in rows],
+            mode="lines",
+            line={"color": PRIMARY},
+            hovertemplate="%{x|%d/%m %H:%M} : %{y:,.2f} €<extra></extra>",
+        )
+    )
+    figure.update_layout(
+        height=260, margin={"l": 10, "r": 10, "t": 10, "b": 10}, yaxis_title="Valeur (€)"
+    )
+    st.plotly_chart(figure, width="stretch", key="shadow_values")
+
+
+SIDE_LABELS = {"buy": "Achat", "sell": "Vente"}
+ORDER_STATUS_LABELS = {
+    "open": "En attente",
+    "filled": "Exécuté",
+    "cancelled": "Annulé",
+    "expired": "Expiré",
+}
+
+
+def shadow_orders() -> None:
+    orders = load_orders(ro(), production.PRODUCTION_SIM_ID, "production_orders")[-20:][::-1]
+    if not orders:
+        st.caption("Aucun ordre ombre pour l'instant (décisions à chaque clôture 4 h).")
+        return
+    st.markdown("##### Derniers ordres qui auraient été envoyés")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Date": [fmt.timestamp(o.filled_at or o.created_at) for o in orders],
+                "Actif": [o.market.split("-")[0] for o in orders],
+                "Sens": [SIDE_LABELS[o.side.value] for o in orders],
+                "Type": ["Marché" if o.order_type.value == "market" else "Limite" for o in orders],
+                "Motif": [chart_tab.REASON_LABELS.get(o.reason.value, o.reason) for o in orders],
+                "Quantité": [fmt.quantity(o.quantity) for o in orders],
+                "Prix": [fmt.price(o.price) for o in orders],
+                "Montant": [fmt.eur(o.notional) for o in orders],
+                "Frais": [fmt.eur(o.fee) for o in orders],
+                "Statut": [ORDER_STATUS_LABELS[o.status.value] for o in orders],
+            }
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+
+def real_balance(state: production.ProductionState, capital: Decimal) -> None:
+    st.markdown("##### Solde réel du compte Bitvavo")
+    if not settings().api_key or not settings().api_secret:
+        st.info(
+            "Aucune clé API configurée. Créez sur Bitvavo une clé avec le seul droit "
+            "« Consulter » (ni trading, ni retrait), ajoutez `BITVAVO_API_KEY` et "
+            "`BITVAVO_API_SECRET` dans `.env` sur le serveur, puis redémarrez le moteur."
+        )
+        return
+    if state.balance_error:
+        st.warning(f"Dernière lecture du solde en échec : {state.balance_error}")
+    if state.balances is None:
+        st.caption("Solde lu toutes les 5 minutes quand le mode ombre est actif ; pas encore lu.")
+        return
+    prices = latest_prices(ro())
+    rows = []
+    for symbol, (available, in_order) in sorted(
+        state.balances.items(), key=lambda item: (item[0] != "EUR", item[0])
+    ):
+        price = Decimal(1) if symbol == "EUR" else prices.get(f"{symbol}-EUR")
+        total = available + in_order
+        rows.append(
+            {
+                "Actif": symbol,
+                "Disponible": fmt.quantity(available),
+                "En ordre": fmt.quantity(in_order),
+                "Valeur estimée": fmt.eur(total * price) if price is not None else "—",
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    euros = state.balances.get("EUR", (Decimal(0), Decimal(0)))[0]
+    st.caption(f"Lu le {fmt.timestamp(state.balance_at)}, en lecture seule.")
+    if euros < capital:
+        st.warning(
+            f"Euros disponibles ({fmt.eur(euros)}) inférieurs au capital engagé "
+            f"({fmt.eur(capital)}) : à approvisionner avant le mode réel."
+        )
 
 
 def production_history() -> None:

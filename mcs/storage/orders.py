@@ -1,4 +1,4 @@
-"""Accès à la table `orders`."""
+"""Accès à la table `orders` (simulations) ou `production_orders` (mode production)."""
 
 from __future__ import annotations
 
@@ -13,13 +13,20 @@ COLUMNS = (
     "sim_id, market, side, order_type, status, reason, quantity, price, notional, fee, "
     "liquidity, reserved, book_bid, book_ask, created_at, expires_at, filled_at"
 )
+ORDER_TABLES = frozenset({"orders", "production_orders"})
 
 
-def insert_order(conn: sqlite3.Connection, order: Order) -> Order:
+def _table(table: str) -> str:
+    if table not in ORDER_TABLES:
+        raise ValueError(f"Table d'ordres inconnue : {table}")
+    return table
+
+
+def insert_order(conn: sqlite3.Connection, order: Order, table: str = "orders") -> Order:
     """Enregistre un ordre (son `id` est ignoré) et le renvoie avec l'identifiant attribué."""
     with transaction(conn):
         cursor = conn.execute(
-            f"INSERT INTO orders ({COLUMNS}) VALUES ({', '.join('?' * 17)})",
+            f"INSERT INTO {_table(table)} ({COLUMNS}) VALUES ({', '.join('?' * 17)})",
             (
                 order.sim_id, order.market, order.side, order.order_type, order.status,
                 order.reason, order.quantity, order.price, order.notional, order.fee,
@@ -30,11 +37,11 @@ def insert_order(conn: sqlite3.Connection, order: Order) -> Order:
     return replace(order, id=int(cursor.lastrowid or 0))
 
 
-def update_order(conn: sqlite3.Connection, order: Order) -> None:
+def update_order(conn: sqlite3.Connection, order: Order, table: str = "orders") -> None:
     with transaction(conn):
         conn.execute(
-            """UPDATE orders SET status = ?, price = ?, notional = ?, fee = ?, liquidity = ?,
-                   reserved = ?, filled_at = ? WHERE id = ?""",
+            f"""UPDATE {_table(table)} SET status = ?, price = ?, notional = ?, fee = ?,
+                   liquidity = ?, reserved = ?, filled_at = ? WHERE id = ?""",
             (
                 order.status, order.price, order.notional, order.fee, order.liquidity,
                 order.reserved, order.filled_at, order.id,
@@ -42,8 +49,10 @@ def update_order(conn: sqlite3.Connection, order: Order) -> None:
         )  # fmt: skip
 
 
-def load_orders(conn: sqlite3.Connection, sim_id: int | None = None) -> list[Order]:
-    query = f"SELECT id, {COLUMNS} FROM orders"
+def load_orders(
+    conn: sqlite3.Connection, sim_id: int | None = None, table: str = "orders"
+) -> list[Order]:
+    query = f"SELECT id, {COLUMNS} FROM {_table(table)}"
     params: tuple[int, ...] = ()
     if sim_id is not None:
         query += " WHERE sim_id = ?"

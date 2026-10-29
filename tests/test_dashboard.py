@@ -132,6 +132,8 @@ def app_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SQLITE_JOURNAL_MODE", "WAL")
     monkeypatch.setenv("CRYPTO_BASKET", ",".join(MARKETS))
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("BITVAVO_API_KEY", "")  # le .env local peut contenir une clé
+    monkeypatch.setenv("BITVAVO_API_SECRET", "")
     import streamlit as st
 
     st.cache_resource.clear()
@@ -202,6 +204,13 @@ async def test_app_running_shows_metrics_and_stop(app_db: Path) -> None:
     assert chosen is not None and chosen.capital == 300 and chosen.metric == "pnl"
     assert any(m.label == "Scénario retenu" for m in at.metric)
     assert at.button(key="btn_prod_choose").disabled  # déjà retenu
+    at.button(key="btn_shadow_on").click().run()
+    assert not at.exception
+    state = production.read_state(connect(app_db, JournalMode.WAL))
+    assert state.mode is production.Mode.SHADOW
+    assert any("Aucune clé API configurée" in i.value for i in at.info)
+    at.button(key="btn_shadow_off").click().run()
+    assert production.read_state(connect(app_db, JournalMode.WAL)).mode is production.Mode.OFF
     at.button(key="btn_stop").click().run()
     assert commands(app_db)[-1] == "stop"
 
@@ -220,3 +229,24 @@ async def test_app_hold_reset_needs_confirmation(app_db: Path) -> None:
     assert any("configurations sont conservées" in w.value for w in at.warning)
     at.button(key="btn_confirm").click().run()
     assert commands(app_db)[-1] == "reset"
+
+
+async def test_app_shows_shadow_portfolio(app_db: Path) -> None:
+    conn = connect(app_db, JournalMode.WAL)
+    prepare(conn)
+    engine = await run_live(conn, bars=6)
+    busiest = conn.execute(
+        "SELECT sim_id FROM orders GROUP BY sim_id ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()[0]
+    production.choose(conn, busiest, Decimal(300), "pnl", engine.clock())
+    production.set_mode(conn, production.Mode.SHADOW, engine.clock())
+    await engine.process_commands()
+    clock = engine.clock
+    for _ in range(8 * 4):
+        clock.now += HOUR  # type: ignore[attr-defined]
+        await engine.on_tick(clock())
+    conn.close()
+    at = run_app()
+    assert any("Portefeuille ombre" in m.value for m in at.markdown)
+    assert any("auraient été envoyés" in m.value for m in at.markdown)
+    assert any("P&L" in m.value and "Valeur totale" in m.value for m in at.markdown)

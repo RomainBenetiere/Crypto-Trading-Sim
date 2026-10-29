@@ -47,6 +47,8 @@ log = logging.getLogger(__name__)
 BAR_4H = INTERVAL_MS["4h"]
 HOUR = INTERVAL_MS["1h"]
 FALLBACK_STOP = Decimal("0.05")
+# Marge d'un achat relevé au minimum : l'arrondi de la quantité ne doit pas le faire refuser.
+LIFT_MARGIN = Decimal("1.01")
 
 
 class PositionStore(Protocol):
@@ -70,8 +72,12 @@ class Simulation:
         markets: list[str],
         initial_capital: Decimal = Decimal(1000),
         store: PositionStore | None = None,
+        lift_to_minimum: bool = False,
     ) -> None:
         self.sim_id, self.config, self.broker, self.fees = sim_id, config, broker, fees
+        # Mode production : un achat sous le minimum d'ordre est relevé au minimum (décision 43)
+        # au lieu d'être abandonné, si les liquidités le permettent.
+        self.lift_to_minimum = lift_to_minimum
         self.markets = sorted(markets)
         self.store = store
         self.positions: dict[str, Position] = {}
@@ -189,6 +195,11 @@ class Simulation:
         for market, position in sorted(self.positions.items()):
             if position.tp_order_id is None and position.take_profit is not None:
                 await self._sync_take_profit(market, now)
+
+    async def resync_take_profits(self, now: int) -> None:
+        """Recalcule tous les take profit (nouveaux paramètres en mode production)."""
+        for market in sorted(self.positions):
+            await self._sync_take_profit(market, now)
 
     def on_order_closed(self, order: Order) -> None:
         """Ordre expiré ou annulé."""
@@ -334,8 +345,14 @@ class Simulation:
             ),
         )
         # Sous le minimum d'ordre (frais compris), l'achat serait refusé : inutile de l'envoyer.
-        if amount < self.broker.min_order_quote(market) * (1 + self.fees.taker):
-            return
+        minimum = self.broker.min_order_quote(market) * (1 + self.fees.taker)
+        if amount < minimum:
+            lifted = minimum * LIFT_MARGIN
+            if not (
+                self.lift_to_minimum and amount > 0 and self.broker.cash(self.sim_id) >= lifted
+            ):
+                return
+            amount = lifted
         if config.execution.entry_order is EntryOrder.MARKET:
             result = await self.broker.buy_market(self.sim_id, market, amount, Reason.SIGNAL, now)
             if isinstance(result, Order):

@@ -118,8 +118,10 @@ class PaperBroker:
         books: BookProvider,
         rules: Mapping[str, MarketRules] | None = None,
         spread: SpreadLookup | None = None,
+        orders_table: str = "orders",
     ) -> None:
         self.conn, self.fees, self.books = conn, fees, books
+        self.orders_table = orders_table
         self.rules = dict(rules) if rules is not None else load_rules(conn)
         self.spread = spread or spread_from_table(conn)
         self.accounts: dict[int, Account] = {}
@@ -129,7 +131,7 @@ class PaperBroker:
     def open_account(self, sim_id: int, initial_cash: Decimal) -> Account:
         """Ouvre le compte, ou le reconstitue à partir des ordres enregistrés (reprise)."""
         account = Account(sim_id, initial_cash, initial_cash)
-        for order in load_orders(self.conn, sim_id):
+        for order in load_orders(self.conn, sim_id, self.orders_table):
             if order.status is OrderStatus.FILLED:
                 account.apply_fill(order)
             elif order.status is OrderStatus.OPEN:
@@ -317,7 +319,7 @@ class PaperBroker:
             notional=None, fee=None, liquidity=None, reserved=cost,
             book_bid=_best(book.bids), book_ask=_best(book.asks), created_at=now,
             expires_at=expires_at,
-        ))  # fmt: skip
+        ), self.orders_table)  # fmt: skip
         account.open_orders[order.id] = order
         log.info(
             "Sim %d : limite d'achat %s %s à %s (réservé %s €, carnet %s / %s).",
@@ -370,7 +372,7 @@ class PaperBroker:
             status=OrderStatus.OPEN, reason=reason, quantity=quantity, price=limit,
             notional=None, fee=None, liquidity=None, reserved=None, book_bid=None,
             book_ask=None, created_at=now, expires_at=expires_at,
-        ))  # fmt: skip
+        ), self.orders_table)  # fmt: skip
         account.open_orders[order.id] = order
         log.info("Sim %d : limite de vente %s %s à %s.", sim_id, quantity, market, limit)
         return order
@@ -449,7 +451,7 @@ class PaperBroker:
             quantity=quantity, price=notional / quantity, notional=notional, fee=fee,
             liquidity=Liquidity.TAKER, reserved=None, book_bid=_best(book.bids),
             book_ask=_best(book.asks), created_at=now, filled_at=now,
-        ))  # fmt: skip
+        ), self.orders_table)  # fmt: skip
         account.apply_fill(order)
         log.info(
             "Sim %d : %s marché %s %s (%s) à %s, frais %s €, carnet %s / %s.",
@@ -473,7 +475,7 @@ class PaperBroker:
             fee=self.fees.fee(notional, Liquidity.MAKER), liquidity=Liquidity.MAKER,
             reserved=None, filled_at=max(candle.ts, order.created_at),
         )  # fmt: skip
-        update_order(self.conn, filled)
+        update_order(self.conn, filled, self.orders_table)
         del account.open_orders[order.id]
         account.apply_fill(filled)
         log.info(
@@ -491,7 +493,7 @@ class PaperBroker:
 
     def _close(self, account: Account, order: Order, status: OrderStatus, now: int) -> Order:
         closed = replace(order, status=status, reserved=None, filled_at=None)
-        update_order(self.conn, closed)
+        update_order(self.conn, closed, self.orders_table)
         del account.open_orders[order.id]
         log.info("Sim %d : ordre %d %s (%s).", account.sim_id, order.id, status, order.market)
         return closed

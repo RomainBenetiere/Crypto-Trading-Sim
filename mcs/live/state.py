@@ -98,10 +98,13 @@ def set_status(conn: sqlite3.Connection, status: Status, now: int, **fields: obj
 
 
 class SimStateStore:
-    """Pause après stop, circuit breaker, plus haut de référence et P&L des trades."""
+    """Pause après stop, circuit breaker, plus haut de référence et P&L des trades
+    (table `sim_state`, ou `production_sim_state` pour le mode production)."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self.conn = conn
+    def __init__(self, conn: sqlite3.Connection, table: str = "sim_state") -> None:
+        if table not in ("sim_state", "production_sim_state"):
+            raise ValueError(f"Table d'état inconnue : {table}")
+        self.conn, self.table = conn, table
 
     def save(self, sims: list[Simulation], now: int) -> None:
         rows = [
@@ -121,7 +124,7 @@ class SimStateStore:
         ]
         with transaction(self.conn):
             self.conn.executemany(
-                """INSERT INTO sim_state (sim_id, state_json, updated_at) VALUES (?, ?, ?)
+                f"""INSERT INTO {self.table} (sim_id, state_json, updated_at) VALUES (?, ?, ?)
                    ON CONFLICT (sim_id) DO UPDATE SET state_json = excluded.state_json,
                        updated_at = excluded.updated_at""",
                 rows,
@@ -129,7 +132,7 @@ class SimStateStore:
 
     def restore(self, sim: Simulation) -> None:
         row = self.conn.execute(
-            "SELECT state_json FROM sim_state WHERE sim_id = ?", (sim.sim_id,)
+            f"SELECT state_json FROM {self.table} WHERE sim_id = ?", (sim.sim_id,)
         ).fetchone()
         if row is None:
             return

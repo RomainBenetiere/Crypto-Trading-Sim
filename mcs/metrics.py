@@ -25,6 +25,8 @@ from decimal import Decimal
 
 from mcs.sampling import CATEGORICALS, NUMERICS
 from mcs.storage.db import transaction
+from mcs.storage.orders import ORDER_TABLES
+from mcs.storage.positions import POSITION_TABLES
 
 INITIAL_CAPITAL = Decimal(1000)
 MIN_TRADES_FOR_TORNADO = 10
@@ -271,10 +273,17 @@ def latest_prices(conn: sqlite3.Connection) -> dict[str, Decimal]:
 
 
 def positions_detail(
-    conn: sqlite3.Connection, sim_id: int, prices: Mapping[str, Decimal], taker: Decimal
+    conn: sqlite3.Connection,
+    sim_id: int,
+    prices: Mapping[str, Decimal],
+    taker: Decimal,
+    table: str = "positions",
 ) -> list[PositionDetail]:
+    """Positions d'une simulation (ou du portefeuille ombre, `production_positions`)."""
+    if table not in POSITION_TABLES:
+        raise ValueError(f"Table de positions inconnue : {table}")
     details = []
-    for row in conn.execute("SELECT * FROM positions WHERE sim_id = ? ORDER BY market", (sim_id,)):
+    for row in conn.execute(f"SELECT * FROM {table} WHERE sim_id = ? ORDER BY market", (sim_id,)):
         quantity, cost = Decimal(row["quantity"]), Decimal(row["invested_cost"])
         price = prices.get(row["market"])
         value = quantity * price if price is not None else None
@@ -301,11 +310,18 @@ def positions_detail(
     return details
 
 
-def cash_balance(conn: sqlite3.Connection, sim_id: int) -> Decimal:
+def cash_balance(
+    conn: sqlite3.Connection,
+    sim_id: int,
+    initial: Decimal = INITIAL_CAPITAL,
+    table: str = "orders",
+) -> Decimal:
     """Liquidités totales reconstituées à partir des ordres remplis."""
-    cash = INITIAL_CAPITAL
+    if table not in ORDER_TABLES:
+        raise ValueError(f"Table d'ordres inconnue : {table}")
+    cash = initial
     for row in conn.execute(
-        "SELECT side, notional, fee FROM orders WHERE sim_id = ? AND status = 'filled'",
+        f"SELECT side, notional, fee FROM {table} WHERE sim_id = ? AND status = 'filled'",
         (sim_id,),
     ):
         notional, fee = Decimal(row["notional"]), Decimal(row["fee"])

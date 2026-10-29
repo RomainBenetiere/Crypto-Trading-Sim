@@ -9,6 +9,10 @@ Le moteur intègre la collecte (décision 31) : WebSocket (ticker, bougies 1 min
 - clôture 1 h : nouvelles bougies chargées, trailing horaire, valeur des portefeuilles ;
 - clôture 4 h : sorties, trailings et entrées des 300 simulations.
 
+Mode ombre (SPEC §15) : le scénario choisi tourne en plus sur son propre portefeuille
+(`ShadowRunner`), aux mêmes événements, tant que les simulations tournent ; le solde réel est
+lu toutes les 5 minutes si une clé en lecture seule est configurée. Aucun ordre envoyé.
+
 Machine à états (SPEC §8) pilotée par la table `commands`. En Hold, aucun ordre : les
 entrées en attente et les take profit sont annulés, puis les take profit sont re-posés à la
 reprise (décision 28). Une coupure non prévue est enregistrée comme interruption, sans
@@ -31,7 +35,9 @@ from typing import Any
 
 import httpx
 
+from mcs import production
 from mcs.backtest import Dataset, load_dataset
+from mcs.bitvavo.account import BitvavoAccount
 from mcs.bitvavo.rest import BitvavoError, BitvavoRest
 from mcs.bitvavo.ws import TickerState
 from mcs.broker.base import Liquidity, Side
@@ -42,6 +48,7 @@ from mcs.broker.rules import load_rules
 from mcs.collector import LiveCollector
 from mcs.config import load_settings
 from mcs.live.context import LiveContext
+from mcs.live.production import ShadowRunner
 from mcs.live.state import (
     Command,
     SimStateStore,
@@ -79,6 +86,7 @@ COMMAND_POLL_S = 2.0
 HEARTBEAT_S = 30.0
 TICK_DELAY_MS = 3_000
 BOOK_TTL_S = 30.0
+BALANCE_POLL_S = 300.0
 RESET_TABLES = (
     "orders",
     "positions",
@@ -123,6 +131,7 @@ class Engine:
         self.broker: PaperBroker | None = None
         self.ctx: LiveContext | None = None
         self.sims: dict[int, Simulation] = {}
+        self.shadow: ShadowRunner | None = None
         self.metrics: dict[int, SimMetrics] = {}
         self.last_1h = self.last_4h = 0
         # Les commandes, les bougies 1 min et les clôtures ne s'entrelacent jamais.
@@ -155,6 +164,9 @@ class Engine:
         self.broker = PaperBroker(
             self.conn, self.fees, self.books, rules={m: rules[m] for m in basket}
         )
+        self.shadow = ShadowRunner(
+            self.conn, self.fees, self.books, {m: rules[m] for m in basket}, basket
+        )
         self.sims = {}
         self.metrics = load_metrics(self.conn)
         for stored in load_simulations(self.conn):
@@ -180,13 +192,21 @@ class Engine:
 
     def _clear_runtime(self) -> None:
         self.broker, self.ctx, self.sims, self.metrics = None, None, {}, {}
+        self.shadow = None
 
     # --- Commandes ------------------------------------------------------------------------
 
     async def process_commands(self) -> bool:
-        """Exécute la plus ancienne commande en attente. Retourne True si une a été traitée."""
+        """Exécute la plus ancienne commande en attente, puis aligne le mode ombre sur l'état
+        et le choix du dashboard. Retourne True si une commande a été traitée."""
         async with self.lock:
-            return await self._process_next_command()
+            processed = await self._process_next_command()
+            await self.sync_shadow()
+            return processed
+
+    async def sync_shadow(self) -> None:
+        if self.shadow is not None:
+            await self.shadow.sync(self.status is Status.RUNNING, self.clock())
 
     async def _process_next_command(self) -> bool:
         command = next_command(self.conn)
@@ -330,6 +350,15 @@ class Engine:
             await self.sims[order.sim_id].on_order_filled(order, self.ctx, now)
         if changed:
             self.sim_states.save(changed, now)
+        shadow = self.shadow
+        if shadow is not None and shadow.sim is not None:
+            moved = candle.market in shadow.sim.positions and await shadow.sim.on_price(
+                candle.market, candle.low, now
+            )
+            for order in shadow.broker.on_candle(candle):
+                await shadow.sim.on_order_filled(order, self.ctx, now)
+            if moved:
+                shadow.save(now)
 
     async def on_tick(self, now: int, data_ok: bool = True) -> None:
         """Chaque minute, après la collecte des bougies clôturées. `data_ok` est faux si la
@@ -348,9 +377,13 @@ class Engine:
         if self.broker is None or self.ctx is None:
             return False
         self.ctx.set_now(now)
+        shadow = self.shadow.sim if self.shadow is not None else None
         if self.status is Status.RUNNING:
             for order in self.broker.expire_orders(now):
                 self.sims[order.sim_id].on_order_closed(order)
+            if shadow is not None and self.shadow is not None:
+                for order in self.shadow.broker.expire_orders(now):
+                    shadow.on_order_closed(order)
         hour = floor_ts(now, "1h")
         if hour > self.last_1h:
             self.last_1h = hour
@@ -361,6 +394,8 @@ class Engine:
                 await self._hourly(now)
             self.write_portfolio_values(hour)
             self.update_metrics(now)
+            if self.shadow is not None and self.shadow.sim is not None:
+                self.shadow.write_value(hour, self.shadow.sim.portfolio_value(self.ctx))
         bar = floor_ts(now, "4h")
         if bar > self.last_4h:
             if not data_ok:
@@ -377,7 +412,10 @@ class Engine:
         for market, data in self.ctx.data.markets.items():
             if len(data.h1):
                 highs[market] = Decimal(repr(float(data.h1["high"].iloc[-1])))
-        for sim in self.sims.values():
+        sims = list(self.sims.values())
+        if self.shadow is not None and self.shadow.sim is not None:
+            sims.append(self.shadow.sim)
+        for sim in sims:
             if sim.config.exits.recalc is StopRecalc.HOURLY and sim.positions:
                 await sim.on_1h_close(now, self.ctx, highs)
 
@@ -386,7 +424,10 @@ class Engine:
         ctx = self.ctx
         started = self.clock()
         ctx.set_now(now)
-        await asyncio.to_thread(ctx.warm, [s.config for s in self.sims.values()])
+        configs = [s.config for s in self.sims.values()]
+        if self.shadow is not None and self.shadow.sim is not None:
+            configs.append(self.shadow.sim.config)
+        await asyncio.to_thread(ctx.warm, configs)
         for sim_id in sorted(self.sims):
             # Une simulation à la fois sous le verrou ; entre deux, la boucle traite les
             # bougies 1 min (stops), les commandes et les pings du WebSocket.
@@ -399,6 +440,11 @@ class Engine:
             await asyncio.sleep(0)
         async with self.lock:
             self.sim_states.save(list(self.sims.values()), now)
+            shadow = self.shadow
+            if self.status is Status.RUNNING and shadow is not None and shadow.sim is not None:
+                ctx.set_now(now)
+                await shadow.sim.on_4h_close(now, ctx)
+                shadow.save(now)
         log.info("Clôture 4 h traitée en %.1f s.", (self.clock() - started) / 1000)
 
     def update_metrics(self, now: int) -> None:
@@ -481,6 +527,9 @@ async def run_engine() -> None:
             asyncio.create_task(heartbeats(), name="heartbeat"),
             asyncio.create_task(commands(), name="commands"),
         ]
+        if settings.api_key and settings.api_secret:
+            account = BitvavoAccount(settings.api_key, settings.api_secret)
+            tasks.append(asyncio.create_task(read_balances(conn, account), name="balance"))
         try:
             while True:
                 now = now_ms()
@@ -511,6 +560,29 @@ async def run_engine() -> None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             conn.close()
+
+
+async def read_balances(conn: sqlite3.Connection, account: BitvavoAccount) -> None:
+    """Solde réel (lecture seule) toutes les 5 minutes, quand le mode production est actif."""
+    try:
+        while True:
+            if production.read_state(conn).mode is not production.Mode.OFF:
+                await poll_balance(conn, account, now_ms())
+            await asyncio.sleep(BALANCE_POLL_S)
+    finally:
+        await account.aclose()
+
+
+async def poll_balance(conn: sqlite3.Connection, account: BitvavoAccount, now: int) -> None:
+    try:
+        balances = await account.balances()
+    except (httpx.HTTPError, BitvavoError, ValueError) as exc:
+        log.warning("Lecture du solde impossible (%s : %s).", type(exc).__name__, exc)
+        production.record_balances(conn, None, f"{type(exc).__name__} : {exc}", now)
+        return
+    production.record_balances(
+        conn, {b.symbol: (b.available, b.in_order) for b in balances}, None, now
+    )
 
 
 def main() -> None:

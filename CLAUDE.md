@@ -8,7 +8,7 @@ La spécification complète est dans `docs/SPEC.md`. Lis-la entièrement avant d
 
 ## Règles absolues
 
-- **Aucun ordre réel.** Phase 1 = paper trading uniquement. Le code ne doit contenir aucun appel aux endpoints d'ordre de Bitvavo tant que l'utilisateur ne l'a pas explicitement demandé. Seul le `PaperBroker` est implémenté.
+- **Aucun ordre réel.** Phase 1 = paper trading uniquement. Le code ne doit contenir aucun appel aux endpoints d'ordre de Bitvavo tant que l'utilisateur ne l'a pas explicitement demandé. Seul le `PaperBroker` est implémenté. Exception validée (mode production, palier 2) : la lecture seule du solde (`GET /balance`, `mcs/bitvavo/account.py`) ; les ordres réels (palier 3) attendent une validation explicite.
 - **Secrets.** La clé et le secret API Bitvavo vivent uniquement dans `.env` (non versionné, `.gitignore`). Jamais dans le code, la base SQLite, les logs ou le dashboard. Les données publiques (bougies, carnets, ticker) ne nécessitent pas de clé.
 - **Argent et prix en `Decimal`**, jamais en `float`, dans le moteur (stratégie, broker, frais, P&L). Les `float` sont tolérés seulement pour le calcul vectorisé des indicateurs et l'affichage.
 - **Bougies clôturées uniquement** pour les signaux (4 h) et le filtre de fond (1 j). Aucune fuite d'information future dans le backtest d'optimisation.
