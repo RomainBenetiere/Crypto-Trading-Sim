@@ -120,7 +120,7 @@ class Simulation:
                 position.highest_high = max(position.highest_high, high)
             reason = self._exit_reason(market, position, ctx)
             if reason is not None:
-                await self.exit(market, reason, now)
+                await self.exit(market, reason, now, price=ctx.last_price(market))
                 continue
             self._update_trailing(position, ctx, market)
             self._save(position, now)
@@ -149,7 +149,7 @@ class Simulation:
         if position is None or low > position.stop:
             return False
         reason = Reason.TRAILING if position.stop_from_trailing else Reason.STOP
-        return await self.exit(market, reason, now, trigger_price=position.stop)
+        return await self.exit(market, reason, now, trigger_price=position.stop, price=low)
 
     async def on_order_filled(self, order: Order, ctx: MarketContext, now: int) -> None:
         if order.side is Side.BUY:
@@ -219,12 +219,21 @@ class Simulation:
         return None
 
     async def exit(
-        self, market: str, reason: Reason, now: int, trigger_price: Decimal | None = None
+        self,
+        market: str,
+        reason: Reason,
+        now: int,
+        trigger_price: Decimal | None = None,
+        price: Decimal | None = None,
     ) -> bool:
         """Sortie complète au marché (le take profit en attente est d'abord annulé).
-        `trigger_price` : niveau du stop déclenché (utilisé par le backtest historique)."""
+        `trigger_price` : niveau du stop déclenché (utilisé par le backtest historique) ;
+        `price` : cours de référence, pour ne pas tenter de vendre un reliquat valant moins que
+        le minimum d'ordre (refus certain, comme sur Bitvavo)."""
         position = self.positions.get(market)
         if position is None:
+            return False
+        if price is not None and position.quantity * price < self.broker.min_order_quote(market):
             return False
         if position.tp_order_id is not None:
             await self.broker.cancel_order(position.tp_order_id, now)
@@ -324,7 +333,8 @@ class Simulation:
                 stop_distance=(reference - stop) / reference,
             ),
         )
-        if amount <= 0:
+        # Sous le minimum d'ordre (frais compris), l'achat serait refusé : inutile de l'envoyer.
+        if amount < self.broker.min_order_quote(market) * (1 + self.fees.taker):
             return
         if config.execution.entry_order is EntryOrder.MARKET:
             result = await self.broker.buy_market(self.sim_id, market, amount, Reason.SIGNAL, now)
@@ -387,8 +397,8 @@ class Simulation:
             await self.broker.cancel_order(position.tp_order_id, now)
             position.tp_order_id = None
         position.take_profit = level
-        if level is not None:
-            quantity = take_profit_quantity(self.config, position)
+        quantity = take_profit_quantity(self.config, position)
+        if level is not None and quantity * level >= self.broker.min_order_quote(market):
             placed = await self.broker.place_limit_sell(
                 self.sim_id, market, level, quantity, Reason.TAKE_PROFIT, now
             )

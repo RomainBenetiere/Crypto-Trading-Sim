@@ -221,15 +221,14 @@ class TrendFilter:
 def hysteresis_state(gap: pd.Series, band: float) -> pd.Series:
     """True au-dessus de +band, False sous −band, état précédent entre les deux (False au
     départ et tant que `gap` est NaN)."""
-    values = gap.to_numpy(dtype="float64")
-    out = np.zeros(len(values), dtype=bool)
+    out = []
     state = False
-    for i, value in enumerate(values):
-        if np.isnan(value):
+    for value in gap.to_numpy(dtype="float64").tolist():
+        if value != value:  # NaN
             state = False
         elif value > band:
             state = True
         elif value < -band:
             state = False
-        out[i] = state
-    return pd.Series(out, index=gap.index)
+        out.append(state)
+    return pd.Series(np.array(out, dtype=bool), index=gap.index)

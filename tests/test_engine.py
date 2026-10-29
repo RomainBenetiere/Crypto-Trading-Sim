@@ -263,3 +263,23 @@ async def test_4h_close_deferred_while_collection_fails(setup) -> None:  # type:
     clock.now += 60_000
     await engine.on_tick(clock.now, data_ok=True)  # réseau revenu : clôture traitée
     assert len(calls) == len(engine.sims)
+
+
+async def test_4h_close_stops_when_hold_arrives_mid_cycle(setup) -> None:  # type: ignore[no-untyped-def]
+    conn, clock, make_engine, _ = setup
+    conn.execute("UPDATE engine_state SET optimization_status = 'DONE'")
+    engine = make_engine()
+    await command(engine, Command.START)
+    calls: list[int] = []
+    for sim in engine.sims.values():
+        original = sim.on_4h_close
+
+        async def spy(now, ctx, original=original):  # type: ignore[no-untyped-def]
+            calls.append(now)
+            await original(now, ctx)
+            engine.status = Status.HOLD  # un « Arrêter » traité entre deux simulations
+
+        sim.on_4h_close = spy  # type: ignore[method-assign]
+    clock.now = clock.now - clock.now % BAR + BAR + 3_000
+    await engine.on_tick(clock.now)
+    assert len(calls) == 1  # la clôture s'interrompt : plus aucune décision en Hold

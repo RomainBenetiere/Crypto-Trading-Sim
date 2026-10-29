@@ -152,6 +152,10 @@ class PaperBroker:
     def available_quantity(self, sim_id: int, market: str) -> Decimal:
         return self.accounts[sim_id].available_quantity(market)
 
+    def min_order_quote(self, market: str) -> Decimal:
+        rules = self.rules.get(market)
+        return rules.min_order_quote if rules is not None else Decimal(0)
+
     def open_orders(self, sim_id: int) -> list[Order]:
         return list(self.accounts[sim_id].open_orders.values())
 

@@ -500,3 +500,31 @@ async def test_full_scenario_on_real_btc_candles(conn: sqlite3.Connection) -> No
     assert all(s == sorted(s) for s in stops.values())  # stops monotones par position
     assert h.broker.account(1).fees_paid > 0
     assert D(500) < h.sim.portfolio_value(h.ctx()) < D(2000)
+
+
+# --- Minimum d'ordre --------------------------------------------------------------------
+
+
+async def test_entry_below_minimum_is_not_sent(conn: sqlite3.Connection) -> None:
+    config = make_config(
+        Switch(buy=True), portfolio=PortfolioConfig(sizing=Sizing.FIXED_PCT, max_entry=D("0.004"))
+    )
+    h = Harness(conn, config)  # 0,4 % de 1 000 € = 4 € < minimum de 5 €
+    await h.bar(100.0)
+    assert h.sim.positions == {} and load_orders(conn, 1) == []
+
+
+async def test_dust_position_is_not_sold_below_minimum(conn: sqlite3.Connection) -> None:
+    main = Switch(buy=True)
+    config = make_config(
+        main,
+        portfolio=PortfolioConfig(sizing=Sizing.FIXED_PCT, max_entry=D("0.006")),
+        stop=StopConfig(StopType.FIXED_PCT, pct=D("0.05")),
+    )
+    h = Harness(conn, config)
+    await h.bar(100.0)  # achat d'environ 6 €
+    assert MARKET in h.sim.positions
+    main.buy = False
+    await h.bar(50.0, low=40.0)  # la position ne vaut plus que ~3 € : vente impossible
+    assert MARKET in h.sim.positions
+    assert [o.side for o in load_orders(conn, 1)] == ["buy"]  # aucune vente tentée

@@ -10,6 +10,8 @@ Aucune fonction ne lit de valeur future : la valeur à l'indice t ne dépend que
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -61,12 +63,13 @@ def _wilder_sum(series: pd.Series, n: int) -> pd.Series:
     valid = np.flatnonzero(~np.isnan(values))
     if len(valid) < n:
         return pd.Series(out, index=series.index)
-    start = valid[0]
-    total = values[start : start + n - 1].sum()
-    for i in range(start + n - 1, len(values)):
-        total = total - total / n + values[i]
-        out[i] = total
-    return pd.Series(out, index=series.index)
+    start = int(valid[0])
+    total = float(values[start : start + n - 1].sum())
+    items, smoothed = values.tolist(), out.tolist()  # listes : boucle rapide, mêmes opérations
+    for i in range(start + n - 1, len(items)):
+        total = total - total / n + items[i]
+        smoothed[i] = total
+    return pd.Series(np.array(smoothed), index=series.index)
 
 
 def true_range(frame: pd.DataFrame) -> pd.Series:
@@ -138,32 +141,32 @@ def adx(frame: pd.DataFrame, n: int) -> pd.DataFrame:
 def supertrend(frame: pd.DataFrame, period: int, multiplier: float) -> pd.DataFrame:
     """Supertrend : ligne (support en tendance haussière, résistance sinon) et direction
     (+1 haussière, −1 baissière, 0 avant la fin du démarrage)."""
-    mid = ((frame["high"] + frame["low"]) / 2.0).to_numpy()
-    band = multiplier * atr(frame, period).to_numpy()
-    close = frame["close"].to_numpy()
+    # Boucle sur des listes Python (bien plus rapide que l'indexation numpy élément par
+    # élément), mêmes opérations flottantes : résultats identiques au bit près.
+    mid = ((frame["high"] + frame["low"]) / 2.0).to_numpy().tolist()
+    band = (multiplier * atr(frame, period).to_numpy()).tolist()
+    close = frame["close"].to_numpy().tolist()
     size = len(close)
-    upper = np.full(size, np.nan)
-    lower = np.full(size, np.nan)
-    line = np.full(size, np.nan)
-    direction = np.zeros(size, dtype="int64")
+    nan = math.nan
+    upper, lower, line = [nan] * size, [nan] * size, [nan] * size
+    direction = [0] * size
+    started = False
     for i in range(size):
-        if np.isnan(band[i]):
+        b = band[i]
+        if b != b:  # NaN : ATR pas encore calculable
             continue
-        basic_upper, basic_lower = mid[i] + band[i], mid[i] - band[i]
-        if i == 0 or np.isnan(upper[i - 1]):
+        basic_upper, basic_lower = mid[i] + b, mid[i] - b
+        if not started:
+            started = True
             upper[i], lower[i] = basic_upper, basic_lower
             direction[i] = 1 if close[i] > basic_upper else -1
         else:
-            prev_close = close[i - 1]
+            prev_close, prev_upper, prev_lower = close[i - 1], upper[i - 1], lower[i - 1]
             upper[i] = (
-                basic_upper
-                if basic_upper < upper[i - 1] or prev_close > upper[i - 1]
-                else upper[i - 1]
+                basic_upper if basic_upper < prev_upper or prev_close > prev_upper else prev_upper
             )
             lower[i] = (
-                basic_lower
-                if basic_lower > lower[i - 1] or prev_close < lower[i - 1]
-                else lower[i - 1]
+                basic_lower if basic_lower > prev_lower or prev_close < prev_lower else prev_lower
             )
             if direction[i - 1] == -1:
                 direction[i] = 1 if close[i] > upper[i] else -1
@@ -171,7 +174,12 @@ def supertrend(frame: pd.DataFrame, period: int, multiplier: float) -> pd.DataFr
                 direction[i] = -1 if close[i] < lower[i] else 1
         line[i] = lower[i] if direction[i] == 1 else upper[i]
     return pd.DataFrame(
-        {"line": line, "direction": direction, "upper": upper, "lower": lower},
+        {
+            "line": np.array(line),
+            "direction": np.array(direction, dtype="int64"),
+            "upper": np.array(upper),
+            "lower": np.array(lower),
+        },
         index=frame.index,
     )
 

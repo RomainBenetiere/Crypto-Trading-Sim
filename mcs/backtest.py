@@ -199,12 +199,25 @@ class BacktestContext:
         if i == 0:
             return False
         data = self.data.markets[market]
+        if isinstance(indicator, Supertrend) and kind in ("buy_state", "sell_state"):
+            # Une seule série Supertrend par réglage, partagée avec le trailing.
+            trend = self._supertrend_series(market, indicator)
+            return bool(trend[i - 1, 0] == (1 if kind == "buy_state" else -1))
         frame = data.d1 if daily else data.h4
         values = self._series(
             (market, indicator, kind),
             lambda: getattr(indicator, kind)(frame).to_numpy(dtype=bool),
         )
         return bool(values[i - 1])
+
+    def _supertrend_series(self, market: str, params: Supertrend) -> Any:
+        h4 = self.data.markets[market].h4
+        return self._series(
+            (market, params),
+            lambda: core.supertrend(h4, params.atr_period, params.multiplier)[
+                ["direction", "line"]
+            ].to_numpy("float64"),
+        )
 
     def _last(self, market: str, key: tuple[Any, ...], compute: Any) -> Decimal | None:
         i = self._count(market, "4h")
@@ -228,13 +241,7 @@ class BacktestContext:
         i = self._count(market, "4h")
         if i == 0:
             return 0, None
-        h4 = self.data.markets[market].h4
-        values = self._series(
-            (market, params),
-            lambda: core.supertrend(h4, params.atr_period, params.multiplier)[
-                ["direction", "line"]
-            ].to_numpy("float64"),
-        )
+        values = self._supertrend_series(market, params)
         return int(values[i - 1, 0]), _dec(values[i - 1, 1])
 
 
@@ -269,6 +276,9 @@ class HistoricalBroker:
 
     def open_orders(self, sim_id: int) -> list[Order]:
         return list(self.accounts[sim_id].open_orders.values())
+
+    def min_order_quote(self, market: str) -> Decimal:
+        return self.ctx.data.markets[market].rules.min_order_quote
 
     def _rules(self, market: str) -> MarketRules:
         return self.ctx.data.markets[market].rules

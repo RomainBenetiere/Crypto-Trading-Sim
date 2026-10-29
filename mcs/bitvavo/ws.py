@@ -77,7 +77,7 @@ class BitvavoWebSocket:
             connected_at = self._clock()
             try:
                 async with self._connect(
-                    WS_URL, open_timeout=30, ping_interval=20, ping_timeout=20
+                    WS_URL, open_timeout=30, ping_interval=20, ping_timeout=60
                 ) as ws:
                     await ws.send(self.subscribe_message())
                     self.connections += 1

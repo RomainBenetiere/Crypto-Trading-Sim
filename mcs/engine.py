@@ -336,12 +336,17 @@ class Engine:
         collecte a échoué (coupure réseau) : la clôture 4 h est alors reportée, jamais prise
         sur des bougies incomplètes ; le reste (valeurs, expirations) continue."""
         async with self.lock:
-            await self._on_tick(now, data_ok)
+            four_hour_close = await self._on_tick(now, data_ok)
+        if four_hour_close:
+            # Hors du verrou global : stops et ordres limite continuent d'être traités
+            # entre deux simulations pendant la clôture 4 h.
+            await self._four_hourly(now)
 
-    async def _on_tick(self, now: int, data_ok: bool = True) -> None:
+    async def _on_tick(self, now: int, data_ok: bool = True) -> bool:
+        """Partie minute et heure ; retourne True si une clôture 4 h est à traiter."""
         heartbeat(self.conn, now)
         if self.broker is None or self.ctx is None:
-            return
+            return False
         self.ctx.set_now(now)
         if self.status is Status.RUNNING:
             for order in self.broker.expire_orders(now):
@@ -360,10 +365,10 @@ class Engine:
         if bar > self.last_4h:
             if not data_ok:
                 log.warning("Clôture 4 h reportée : bougies non récupérées (collecte en échec).")
-                return
+                return False
             self.last_4h = bar
-            if self.status is Status.RUNNING:
-                await self._four_hourly(now)
+            return self.status is Status.RUNNING
+        return False
 
     async def _hourly(self, now: int) -> None:
         assert self.ctx is not None
@@ -378,14 +383,22 @@ class Engine:
 
     async def _four_hourly(self, now: int) -> None:
         assert self.ctx is not None
+        ctx = self.ctx
         started = self.clock()
-        self.ctx.set_now(now)
-        await asyncio.to_thread(self.ctx.warm, [s.config for s in self.sims.values()])
+        ctx.set_now(now)
+        await asyncio.to_thread(ctx.warm, [s.config for s in self.sims.values()])
         for sim_id in sorted(self.sims):
-            await self.sims[sim_id].on_4h_close(now, self.ctx)
-            # Rend la main à la boucle : le WebSocket répond aux pings pendant le cycle.
+            # Une simulation à la fois sous le verrou ; entre deux, la boucle traite les
+            # bougies 1 min (stops), les commandes et les pings du WebSocket.
+            async with self.lock:
+                if self.status is not Status.RUNNING or self.ctx is not ctx:
+                    log.info("Clôture 4 h interrompue (état %s).", self.status.value)
+                    return
+                ctx.set_now(now)
+                await self.sims[sim_id].on_4h_close(now, ctx)
             await asyncio.sleep(0)
-        self.sim_states.save(list(self.sims.values()), now)
+        async with self.lock:
+            self.sim_states.save(list(self.sims.values()), now)
         log.info("Clôture 4 h traitée en %.1f s.", (self.clock() - started) / 1000)
 
     def update_metrics(self, now: int) -> None:

@@ -144,3 +144,6 @@ class Broker(Protocol):
         """Quantité vendable (hors quantité bloquée par un ordre limite de vente)."""
 
     def open_orders(self, sim_id: int) -> list[Order]: ...
+
+    def min_order_quote(self, market: str) -> Decimal:
+        """Montant minimum d'un ordre sur ce marché (en €, hors frais)."""
