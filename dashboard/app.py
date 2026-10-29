@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +25,7 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from dashboard import chart_tab, fmt, queries  # noqa: E402
+from mcs import production  # noqa: E402
 from mcs.config import Settings, load_settings  # noqa: E402
 from mcs.health import Level, run_checks  # noqa: E402
 from mcs.live.state import Command  # noqa: E402
@@ -747,6 +749,129 @@ def health_panel() -> None:
         st.caption("Rapport complet : `python -m mcs.health`. Recalculé chaque minute.")
 
 
+# --- Onglet « Production » -------------------------------------------------------------------
+
+SCALE_EXAMPLES = (Decimal(40), Decimal(10))
+
+
+def tab_production() -> None:
+    st.subheader("Mode production")
+    st.info(
+        "Palier 1 : choix du scénario uniquement. **Aucun ordre réel n'est passé** ; le "
+        "scénario retenu servira au mode « ombre » puis aux ordres réels, chacun activé "
+        "séparément."
+    )
+    current = production.active_choice(ro())
+    if current is None:
+        st.markdown("Aucun scénario choisi pour l'instant.")
+    else:
+        production_summary(current)
+    table = simulations(data_version())
+    if table.empty:
+        st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
+        return
+    st.markdown("#### Choisir parmi les 5 meilleures simulations")
+    metric = st.radio(
+        "Classer par",
+        list(METRICS),
+        format_func=lambda m: METRICS[m],
+        horizontal=True,
+        key="prod_metric",
+    )
+    column = METRIC_COLUMNS[metric]
+    top = table.dropna(subset=[column]).nlargest(5, column).reset_index(drop=True)
+    if top.empty:
+        st.info(
+            "Pas encore de classement : les métriques apparaissent après la première heure "
+            "pleine, le ratio de Calmar à partir de 10 trades clôturés."
+        )
+        production_history()
+        return
+    shown = metrics_columns(top)
+    shown.insert(0, "Rang", range(1, len(top) + 1))
+    event = st.dataframe(
+        shown,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="prod_top5",
+        width="stretch",
+    )
+    picked = event.selection.rows if event and event.selection else []
+    sim = top.iloc[picked[0] if picked else 0]
+    sim_id = int(sim["sim_id"])
+    capital = st.number_input(
+        "Capital engagé (€)",
+        min_value=10.0,
+        value=float(current.capital if current else production.DEFAULT_CAPITAL),
+        step=50.0,
+        key="prod_capital",
+    )
+    amount = Decimal(str(capital))
+    scale = production.scale_factor(amount)
+    examples = " ; ".join(
+        f"{fmt.eur(float(sim_amount))} en simulation → "
+        f"{fmt.eur(float(production.scaled_quote(sim_amount, scale, production.DISPLAY_MIN_ORDER)))} réels"
+        for sim_amount in SCALE_EXAMPLES
+    )
+    st.caption(
+        f"Échelle {fmt.number(float(scale), 3)} (capital ÷ 1 000 €), montants relevés au "
+        f"minimum Bitvavo de {fmt.eur(float(production.DISPLAY_MIN_ORDER))}. Exemple : {examples}."
+    )
+    same = current is not None and current.sim_id == sim_id and current.capital == amount
+    if current is not None and not same:
+        st.caption(
+            "Les positions réelles ouvertes resteront ouvertes et seront gérées avec les "
+            "paramètres du nouveau scénario."
+        )
+    if st.button(
+        f"Choisir {fmt.sim_label(sim_id)}", key="btn_prod_choose", type="primary", disabled=same
+    ):
+        production.choose(rw(), sim_id, amount, metric, now_ms())
+        st.rerun()
+    production_history()
+
+
+def production_summary(choice: production.Choice) -> None:
+    draw = json.loads(choice.draw_json)
+    cols = st.columns(4)
+    cols[0].metric("Scénario retenu", fmt.sim_label(choice.sim_id))
+    cols[1].metric("Capital engagé", fmt.eur(float(choice.capital)))
+    cols[2].metric("Échelle", fmt.number(float(choice.scale), 3))
+    cols[3].metric("Choisi le", fmt.timestamp(choice.chosen_at))
+    pnl = None if choice.pnl_pct is None else float(choice.pnl_pct)
+    drawdown = None if choice.max_drawdown_pct is None else float(choice.max_drawdown_pct)
+    st.caption(
+        f"{queries.MODE_LABELS[choice.mode]} · "
+        f"{queries.FAMILY_LABELS.get(choice.family, choice.family)} · "
+        f"classé par {METRICS[choice.metric]} · au moment du choix : P&L "
+        f"{fmt.pct(pnl, signed=True)}, drawdown max {fmt.pct(drawdown)}, "
+        f"{choice.closed_trades or 0} trades. Configuration figée ({len(draw)} paramètres tirés)."
+    )
+
+
+def production_history() -> None:
+    choices = production.history(ro())
+    if len(choices) < 2:
+        return
+    st.markdown("#### Historique des choix")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Scénario": [fmt.sim_label(c.sim_id) for c in choices],
+                "Classement": [METRICS[c.metric] for c in choices],
+                "Capital": [fmt.eur(float(c.capital)) for c in choices],
+                "Choisi le": [fmt.timestamp(c.chosen_at) for c in choices],
+                "Remplacé le": [
+                    "—" if c.replaced_at is None else fmt.timestamp(c.replaced_at) for c in choices
+                ],
+            }
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+
 # --- Page -----------------------------------------------------------------------------------
 
 
@@ -758,8 +883,14 @@ def main() -> None:
     )
     control_bar()
     health_panel()
-    follow, indicators, markets, graphs = st.tabs(
-        ["Suivi des simulations", "Paramètres des indicateurs", "Marchés du panier", "Graphiques"]
+    follow, indicators, markets, graphs, prod = st.tabs(
+        [
+            "Suivi des simulations",
+            "Paramètres des indicateurs",
+            "Marchés du panier",
+            "Graphiques",
+            "Production",
+        ]
     )
     with follow:
         tab_follow_up()
@@ -769,6 +900,8 @@ def main() -> None:
         tab_markets()
     with graphs:
         tab_charts()
+    with prod:
+        tab_production()
 
 
 main()

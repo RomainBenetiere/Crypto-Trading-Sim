@@ -289,6 +289,7 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
 40. **Outils de rodage** : `python -m mcs.health [--hours 72]` (rapport : signes de vie, interruptions, cycles 4 h, fraîcheur et trous de collecte, valeurs horaires, métriques, cohérence ordres / positions / liquidités, WebSocket, limites de requêtes, ordres refusés, erreurs ; code de sortie 1 en cas d'anomalie), encart « Santé du moteur » du dashboard, `python -m mcs.control status|optimize|start|stop|resume|reset --yes` pour piloter sans dashboard. Docker : base et journaux en montages locaux (`./data`, `./logs`) pour reprendre la base du développement.
 41. **Onglet « Graphiques »** (ajout hors maquette) : mosaïque des paires (clôtures 4 h sur 7 à 90 jours, variation, état du filtre de fond typique ; un clic ouvre la paire) et vue détaillée en chandeliers (4 h sur 60 jours par défaut ; 1 h, 4 h ou 1 j), avec EMA, Supertrend, Donchian, ligne du filtre de fond, sous-graphiques volume / RSI / MACD / ADX et bande d'état des signaux (signal principal en achat, filtre favorable) ; réglages typiques ou ceux d'une simulation (valeurs optimisées comprises), avec ses ordres et les niveaux de sa position. Indicateurs calculés avec le code du moteur sur tout l'historique en 4 h et 1 j (valeurs identiques à celles des décisions), sur la fenêtre + 1 000 bougies en 1 h ; filtre journalier aligné sans fuite.
 42. **Ratio de Calmar** : P&L % ÷ drawdown max % (drawdown plancher 1 %), défini à partir de 10 trades clôturés ; même définition que le critère de l'optimiseur (décision 23). Le dashboard propose « Classer par : P&L / Ratio de Calmar » pour le top 5 et son graphique, la tornade et les indicateurs de synthèse (meilleur, médian, écart optimisé − typique) ; le buy & hold et les trades restent exprimés en P&L. Colonne « Calmar » dans les listes, tri possible.
+43. **Mode production — palier 1** (choix du scénario, aucun ordre réel) : onglet « Production » du dashboard ; choix parmi les 5 meilleures simulations, classées par P&L ou ratio de Calmar ; configuration copiée et figée dans `production_choices` (indépendante d'une remise à zéro ou d'un nouveau plan), historique des choix conservé ; capital engagé 300 € par défaut, échelle = capital ÷ 1 000 € ; montant réel d'un ordre = montant simulé × échelle, arrondi au centime inférieur et **relevé au minimum d'ordre du marché (5 €) s'il passe en dessous** ; changement de scénario : les positions réelles ouvertes restent ouvertes et sont gérées avec les paramètres du nouveau scénario. Troisième écriture du dashboard dans la base (après commandes et sélection du panier).
 
 ## 14. Plan de développement proposé
 
@@ -302,3 +303,11 @@ Référence visuelle : `docs/maquette/`. Rafraîchissement automatique des cours
 8. Métriques et tornade.
 9. Dashboard (3 onglets + barre de pilotage).
 10. Période de rodage : vérifier la mécanique (données, reconnexions, logs) avant d'interpréter les résultats.
+
+## 15. Mode production (ordres réels sur le compte Bitvavo)
+
+Demandé par l’utilisateur le 29/10/2026, réalisé par paliers validés un à un :
+
+1. **Choix du scénario** (décision 43) : aucun appel aux routes d'ordre ni de compte.
+2. **Ombre** : le moteur calcule les ordres réels mis à l'échelle sans les envoyer ; lecture seule du solde avec une clé API en lecture seule (`.env`). À valider avant le palier 3.
+3. **Ordres réels** (`BitvavoBroker`) : clé sans droit de retrait, activation explicite par l'utilisateur, garde-fous (capital maximum engagé, perte maximale par jour, arrêt d'urgence qui vend tout et coupe le mode production).

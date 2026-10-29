@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -55,6 +55,24 @@ MIGRATIONS: dict[int, str] = {
     7: """
         ALTER TABLE metrics ADD COLUMN peak_value TEXT;
         ALTER TABLE metrics ADD COLUMN open_positions INTEGER NOT NULL DEFAULT 0;
+    """,
+    8: """
+    CREATE TABLE IF NOT EXISTS production_choices (
+        id                INTEGER PRIMARY KEY,
+        sim_id            INTEGER NOT NULL,
+        mode              TEXT    NOT NULL,
+        family            TEXT    NOT NULL,
+        config_json       TEXT    NOT NULL,
+        draw_json         TEXT    NOT NULL,
+        metric            TEXT    NOT NULL CHECK (metric IN ('pnl', 'calmar')),
+        pnl_pct           TEXT,
+        max_drawdown_pct  TEXT,
+        closed_trades     INTEGER,
+        capital           TEXT    NOT NULL,
+        scale             TEXT    NOT NULL,
+        chosen_at         INTEGER NOT NULL,
+        replaced_at       INTEGER
+    );
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

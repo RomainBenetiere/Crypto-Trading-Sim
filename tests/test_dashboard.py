@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from dashboard import queries
+from mcs import production
 from mcs.broker.fees import FeeSchedule
 from mcs.config import JournalMode
 from mcs.engine import Engine
@@ -164,6 +165,7 @@ def test_app_not_started_and_optimize_button(app_db: Path) -> None:
         "Paramètres des indicateurs",
         "Marchés du panier",
         "Graphiques",
+        "Production",
     ]
     assert any("**Statut** : Non démarré" in m.value for m in at.markdown)
     assert {b.label for b in at.button} >= {"Optimiser les indicateurs", "Valider la sélection"}
@@ -194,6 +196,12 @@ async def test_app_running_shows_metrics_and_stop(app_db: Path) -> None:
     at.radio(key="rank_metric").set_value("calmar").run()
     assert not at.exception
     assert any(m.label == "Meilleur ratio de Calmar" for m in at.metric)
+    at.button(key="btn_prod_choose").click().run()
+    assert not at.exception
+    chosen = production.active_choice(connect(app_db, JournalMode.WAL))
+    assert chosen is not None and chosen.capital == 300 and chosen.metric == "pnl"
+    assert any(m.label == "Scénario retenu" for m in at.metric)
+    assert at.button(key="btn_prod_choose").disabled  # déjà retenu
     at.button(key="btn_stop").click().run()
     assert commands(app_db)[-1] == "stop"
 

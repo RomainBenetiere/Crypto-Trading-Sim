@@ -184,3 +184,22 @@ CREATE TABLE IF NOT EXISTS sim_state (
     state_json  TEXT    NOT NULL,
     updated_at  INTEGER NOT NULL
 );
+
+-- Mode production (SPEC §15) : scénario choisi, figé au moment du choix (copie de la
+-- configuration, indépendante d'une remise à zéro ou d'un nouveau plan) ; historique des choix.
+CREATE TABLE IF NOT EXISTS production_choices (
+    id                INTEGER PRIMARY KEY,
+    sim_id            INTEGER NOT NULL,
+    mode              TEXT    NOT NULL,
+    family            TEXT    NOT NULL,
+    config_json       TEXT    NOT NULL,
+    draw_json         TEXT    NOT NULL,
+    metric            TEXT    NOT NULL CHECK (metric IN ('pnl', 'calmar')),
+    pnl_pct           TEXT,
+    max_drawdown_pct  TEXT,
+    closed_trades     INTEGER,
+    capital           TEXT    NOT NULL,
+    scale             TEXT    NOT NULL,
+    chosen_at         INTEGER NOT NULL,
+    replaced_at       INTEGER
+);

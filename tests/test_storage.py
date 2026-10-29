@@ -35,6 +35,7 @@ EXPECTED_TABLES = {
     "run_periods",
     "commands",
     "sim_state",
+    "production_choices",
 }
 
 

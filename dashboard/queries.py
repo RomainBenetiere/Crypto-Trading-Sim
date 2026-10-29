@@ -162,8 +162,9 @@ def simulations_table(conn: sqlite3.Connection) -> pd.DataFrame:
             }
         )
     frame = pd.DataFrame(rows)
-    if not frame.empty:  # sans aucun ratio (moins de 10 trades partout), colonne vide typée
-        frame["calmar"] = pd.to_numeric(frame["calmar"], errors="coerce").astype("float64")
+    if not frame.empty:  # avant le live ou sous 10 trades partout : colonnes vides typées
+        for column in ("pnl_eur", "pnl_pct", "dd_pct", "calmar"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
     return frame
 
 
