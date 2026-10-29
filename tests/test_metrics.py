@@ -172,3 +172,28 @@ def test_synthesis() -> None:
     assert s.optimized_gap_mean == pytest.approx((40 - 4) / 2)
     assert s.trades_mean == 8.5 and s.preliminary
     assert synthesis([], None) is None
+
+
+def test_calmar_ratio() -> None:
+    from mcs.metrics import calmar_ratio
+
+    assert calmar_ratio(5.0, 2.0, 12) == pytest.approx(2.5)
+    assert calmar_ratio(5.0, 0.2, 12) == pytest.approx(5.0)  # drawdown plancher 1 %
+    assert calmar_ratio(-3.0, 6.0, 10) == pytest.approx(-0.5)
+    assert calmar_ratio(5.0, 2.0, 9) is None  # moins de 10 trades
+
+
+def test_records_for_calmar_and_tornado() -> None:
+    from mcs.metrics import records_for
+
+    records = make_records()
+    for i, r in enumerate(records):  # un tiers sans ratio (moins de 10 trades)
+        object.__setattr__(r, "calmar", None if i % 3 == 0 else r.pnl / 10)
+    chosen = records_for(records, "calmar")
+    assert len(chosen) == len([r for r in records if r.calmar is not None])
+    assert all(c.pnl == c.calmar for c in chosen)
+    assert records_for(records, "pnl") == records
+    rows = {r.variable: r for r in tornado(chosen)}
+    assert rows["Stop initial"].high_label == "Multiple ATR"  # même effet, autre échelle
+    with pytest.raises(ValueError):
+        records_for(records, "sharpe")

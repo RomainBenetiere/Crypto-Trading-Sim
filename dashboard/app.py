@@ -28,6 +28,7 @@ from mcs.config import Settings, load_settings  # noqa: E402
 from mcs.health import Level, run_checks  # noqa: E402
 from mcs.live.state import Command  # noqa: E402
 from mcs.metrics import (  # noqa: E402
+    METRICS,
     buy_and_hold_detail,
     buy_and_hold_series,
     buy_and_hold_value,
@@ -36,6 +37,7 @@ from mcs.metrics import (  # noqa: E402
     load_buy_and_hold,
     load_records,
     positions_detail,
+    records_for,
     synthesis,
     tornado,
 )
@@ -94,13 +96,24 @@ def simulations(version: tuple[Any, ...]) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def analysis(version: tuple[Any, ...]) -> tuple[Any, Any, float | None]:
+def analysis(version: tuple[Any, ...], metric: str) -> tuple[Any, Any, list[Any]]:
+    """Synthèse en P&L (buy & hold, trades), synthèse et tornade dans la métrique choisie."""
     conn = ro()
     records = load_records(conn)
     lines = load_buy_and_hold(conn)
     bh = buy_and_hold_value(lines, latest_prices(conn), settings().fee_taker)
     bh_pnl = float(bh - 1000) if bh is not None else None
-    return synthesis(records, bh_pnl), tornado(records), bh_pnl
+    chosen = records_for(records, metric)
+    return synthesis(records, bh_pnl), synthesis(chosen, None), tornado(chosen)
+
+
+METRIC_COLUMNS = {"pnl": "pnl_eur", "calmar": "calmar"}
+
+
+def metric_value(metric: str, value: float | None) -> str:
+    if metric == "pnl" or value is None:
+        return fmt.signed_eur(value)
+    return ("+" if value > 0 else "") + fmt.number(value, 2)
 
 
 @st.cache_data(show_spinner=False)
@@ -189,24 +202,36 @@ def buttons(info: queries.EngineInfo) -> None:
 # --- Onglet « Suivi des simulations » -------------------------------------------------------
 
 
-def kpis(summary: Any) -> None:
+def kpis(summary: Any, ranked: Any, metric: str) -> None:
+    name = "P&L" if metric == "pnl" else "ratio de Calmar"
+    if ranked is None:
+        best = median = gap = "—"
+        best_sim, scope = "aucune simulation à 10 trades", "pas encore de ratio"
+    else:
+        best, median = (
+            metric_value(metric, ranked.best_pnl),
+            metric_value(metric, ranked.pnl_median),
+        )
+        gap = metric_value(metric, ranked.optimized_gap_mean)
+        best_sim = fmt.sim_label(ranked.best_sim)
+        scope = "sur l'ensemble" if metric == "pnl" else f"{ranked.count} sim. à 10 trades ou plus"
     st.markdown(
-        f"**{summary.count} simulations** · meilleur P&L {fmt.signed_eur(summary.best_pnl)} "
-        f"({fmt.sim_label(summary.best_sim)}) · P&L médian {fmt.signed_eur(summary.pnl_median)} · "
-        f"{summary.beat_bh} battent le buy & hold ({fmt.share(summary.beat_bh_share)})."
+        f"**{summary.count} simulations** · meilleur {name} {best} ({best_sim}) · {name} "
+        f"médian {median} · {summary.beat_bh} battent le buy & hold "
+        f"({fmt.share(summary.beat_bh_share)})."
     )
     cols = st.columns(6)
     cols[0].metric(
-        "Meilleur P&L",
-        fmt.signed_eur(summary.best_pnl),
-        fmt.sim_label(summary.best_sim),
+        f"Meilleur {name}",
+        best,
+        best_sim,
         delta_color="off",
         delta_arrow="off",
     )
     cols[1].metric(
-        "P&L médian",
-        fmt.signed_eur(summary.pnl_median),
-        "sur l'ensemble",
+        f"{name[0].upper()}{name[1:]} médian",
+        median,
+        scope,
         delta_color="off",
         delta_arrow="off",
     )
@@ -226,7 +251,7 @@ def kpis(summary: Any) -> None:
     )
     cols[4].metric(
         "Optimisé − typique",
-        fmt.signed_eur(summary.optimized_gap_mean),
+        gap,
         "écart moyen entre jumelles",
         delta_color="off",
         delta_arrow="off",
@@ -245,10 +270,11 @@ def kpis(summary: Any) -> None:
         )
 
 
-def value_chart(table: pd.DataFrame) -> None:
+def value_chart(table: pd.DataFrame, metric: str) -> None:
     st.subheader("Valeur du portefeuille : top 5 et buy & hold")
     conn = ro()
-    top = table.dropna(subset=["pnl_eur"]).nlargest(5, "pnl_eur")
+    column = METRIC_COLUMNS[metric]
+    top = table.dropna(subset=[column]).nlargest(5, column)
     series = queries.value_series(conn, top["sim_id"].tolist())
     fig = go.Figure()
     for color, sim_id in zip(TOP_COLORS, top["sim_id"], strict=False):
@@ -298,7 +324,7 @@ def value_chart(table: pd.DataFrame) -> None:
     )
 
 
-def tornado_chart(rows: list[Any], mean: float) -> None:
+def tornado_chart(rows: list[Any], mean: float, metric: str) -> None:
     st.subheader("Variables les plus influentes sur le P&L")
     if not rows:
         st.info("Pas encore assez de simulations avec des métriques.")
@@ -312,13 +338,16 @@ def tornado_chart(rows: list[Any], mean: float) -> None:
             "Option la moins favorable / tiers bas",
             MUTED,
             [r.low_pnl for r in rows],
-            [f"{r.low_label} : {fmt.signed_eur(r.low_pnl)} ({r.low_n} sim.)" for r in rows],
+            [f"{r.low_label} : {metric_value(metric, r.low_pnl)} ({r.low_n} sim.)" for r in rows],
         ),
         (
             "Option la plus favorable / tiers haut",
             PRIMARY,
             [r.high_pnl for r in rows],
-            [f"{r.high_label} : {fmt.signed_eur(r.high_pnl)} ({r.high_n} sim.)" for r in rows],
+            [
+                f"{r.high_label} : {metric_value(metric, r.high_pnl)} ({r.high_n} sim.)"
+                for r in rows
+            ],
         ),
     ):
         fig.add_bar(
@@ -340,12 +369,13 @@ def tornado_chart(rows: list[Any], mean: float) -> None:
         separators=", ",
         height=max(320, 26 * len(rows) + 80),
         margin={"l": 10, "r": 10, "t": 10, "b": 10},
-        xaxis_title="P&L moyen (€)",
+        xaxis_title="P&L moyen (€)" if metric == "pnl" else "Ratio de Calmar moyen",
         legend={"orientation": "h", "y": -0.08},
     )
     st.plotly_chart(fig, width="stretch")
     st.caption(
-        "Écart de P&L moyen entre la pire et la meilleure option (variables par catégories) ou "
+        f"Écart de {'P&L' if metric == 'pnl' else 'ratio de Calmar'} moyen entre la pire et la "
+        "meilleure option (variables par catégories) ou "
         "entre le tiers bas et le tiers haut (variables numériques), autour du P&L moyen. Barres "
         "pâles : écart inférieur à 2 erreurs-types. Variables conditionnelles calculées sur leur "
         "sous-groupe ; « Calibrage » mesuré par l'écart entre jumelles."
@@ -365,13 +395,18 @@ def metrics_columns(frame: pd.DataFrame) -> pd.DataFrame:
             "Réussite": frame["win_rate"].map(fmt.share),
             "Frais": frame["fees"].map(fmt.eur),
             "vs buy & hold": frame["bh_gap"].map(fmt.signed_eur),
+            "Calmar": frame["calmar"].map(lambda v: metric_value("calmar", v)),
         }
     )
 
 
-def top5(table: pd.DataFrame) -> None:
+def top5(table: pd.DataFrame, metric: str) -> None:
     st.subheader("Détail des 5 meilleures simulations")
-    top = table.dropna(subset=["pnl_eur"]).nlargest(5, "pnl_eur").reset_index(drop=True)
+    column = METRIC_COLUMNS[metric]
+    top = table.dropna(subset=[column]).nlargest(5, column).reset_index(drop=True)
+    if top.empty:
+        st.info("Aucune simulation n'a encore 10 trades clôturés : pas de classement par ratio.")
+        return
     shown = metrics_columns(top)
     shown.insert(0, "Rang", range(1, len(top) + 1))
     event = st.dataframe(
@@ -488,6 +523,7 @@ def buy_and_hold_table() -> None:
 
 SORT_KEYS = {
     "P&L": "pnl_eur",
+    "Ratio de Calmar": "calmar",
     "Drawdown max": "dd_pct",
     "Trades": "trades",
     "Réussite": "win_rate",
@@ -539,17 +575,29 @@ def tab_follow_up() -> None:
     if table.empty:
         st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
         return
-    summary, rows, _ = analysis(version)
+    metric = st.radio(
+        "Classer par",
+        list(METRICS),
+        format_func=lambda m: METRICS[m],
+        horizontal=True,
+        key="rank_metric",
+        help="Ratio de Calmar : P&L % ÷ drawdown max % (drawdown plancher 1 %), calculé à "
+        "partir de 10 trades clôturés.",
+    )
+    summary, ranked, rows = analysis(version, metric)
     if summary is None:
         st.info(
             "Les métriques apparaîtront à la première heure pleine après le lancement des "
             "simulations."
         )
     else:
-        kpis(summary)
-        value_chart(table)
-        tornado_chart(rows, summary.pnl_mean)
-        top5(table)
+        kpis(summary, ranked, metric)
+        value_chart(table, metric)
+        if ranked is None:
+            st.info("La tornade par ratio de Calmar attend des simulations à 10 trades ou plus.")
+        else:
+            tornado_chart(rows, ranked.pnl_mean, metric)
+        top5(table, metric)
         buy_and_hold_table()
     all_simulations(table)
 

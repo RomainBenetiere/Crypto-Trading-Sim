@@ -20,7 +20,7 @@ import math
 import sqlite3
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from mcs.sampling import CATEGORICALS, NUMERICS
@@ -28,10 +28,22 @@ from mcs.storage.db import transaction
 
 INITIAL_CAPITAL = Decimal(1000)
 MIN_TRADES_FOR_TORNADO = 10
+# Ratio de Calmar : P&L % ÷ drawdown max %, même définition que le critère de l'optimiseur
+# (décisions 23 et 42) ; non défini sous 10 trades clôturés.
+CALMAR_DRAWDOWN_FLOOR_PCT = 1.0
+CALMAR_MIN_TRADES = 10
+METRICS = {"pnl": "P&L", "calmar": "Ratio de Calmar"}
 HOUR = 3_600_000
 
 
 # --- Métriques par simulation ---------------------------------------------------------------
+
+
+def calmar_ratio(pnl_pct: float, max_drawdown_pct: float, closed_trades: int) -> float | None:
+    """P&L % ÷ drawdown max % (drawdown plancher 1 %), None sous 10 trades clôturés."""
+    if closed_trades < CALMAR_MIN_TRADES:
+        return None
+    return pnl_pct / max(max_drawdown_pct, CALMAR_DRAWDOWN_FLOOR_PCT)
 
 
 @dataclass(frozen=True)
@@ -315,11 +327,13 @@ class SimRecord:
     draw: dict[str, object]
     pnl: float
     trades: int
+    calmar: float | None = None
 
 
 def load_records(conn: sqlite3.Connection) -> list[SimRecord]:
     rows = conn.execute(
-        """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, m.pnl_eur, m.closed_trades
+        """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, m.pnl_eur, m.pnl_pct,
+                  m.max_drawdown_pct, m.closed_trades
            FROM simulations s JOIN metrics m ON m.sim_id = s.id ORDER BY s.id"""
     )
     return [
@@ -331,9 +345,20 @@ def load_records(conn: sqlite3.Connection) -> list[SimRecord]:
             json.loads(r["draw_json"]),
             float(r["pnl_eur"]),
             r["closed_trades"],
+            calmar_ratio(float(r["pnl_pct"]), float(r["max_drawdown_pct"]), r["closed_trades"]),
         )
         for r in rows
     ]
+
+
+def records_for(records: Sequence[SimRecord], metric: str) -> list[SimRecord]:
+    """Les mêmes simulations, la valeur analysée (`pnl`) remplacée par la métrique choisie.
+    Pour le ratio de Calmar, les simulations sans ratio (moins de 10 trades) sont écartées."""
+    if metric == "pnl":
+        return list(records)
+    if metric != "calmar":
+        raise ValueError(f"Métrique inconnue : {metric}")
+    return [replace(r, pnl=r.calmar) for r in records if r.calmar is not None]
 
 
 @dataclass(frozen=True)

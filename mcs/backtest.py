@@ -46,6 +46,7 @@ from mcs.indicators import core
 from mcs.indicators.frame import candles_to_frame, fill_gaps
 from mcs.indicators.signals import Supertrend
 from mcs.market_data import INTERVAL_MS
+from mcs.metrics import calmar_ratio
 from mcs.storage.candles import load_candles
 from mcs.storage.markets import selected_markets
 from mcs.strategy.config import ATR_PERIOD, StopRecalc, StrategyConfig
@@ -56,8 +57,6 @@ BAR_4H = INTERVAL_MS["4h"]
 DAY = INTERVAL_MS["1d"]
 DEFAULT_SPREAD = Decimal("0.001")
 INITIAL_CAPITAL = Decimal(1000)
-MIN_TRADES = 10
-MIN_DRAWDOWN = 0.01  # plancher du drawdown dans le ratio rendement / drawdown
 FRAME_WINDOW = 300
 
 
@@ -528,9 +527,8 @@ class BacktestResult:
     @property
     def score(self) -> float:
         """Rendement / drawdown max (décision 23) ; 0 sous 10 trades clôturés."""
-        if self.trades < MIN_TRADES:
-            return 0.0
-        return self.total_return / max(self.max_drawdown, MIN_DRAWDOWN)
+        ratio = calmar_ratio(self.total_return * 100, self.max_drawdown * 100, self.trades)
+        return 0.0 if ratio is None else ratio
 
 
 async def _run(

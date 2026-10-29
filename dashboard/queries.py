@@ -13,7 +13,7 @@ import pandas as pd
 
 from dashboard import fmt
 from mcs.live.state import Command, period_totals, request_command
-from mcs.metrics import OPTION_LABELS
+from mcs.metrics import OPTION_LABELS, calmar_ratio
 from mcs.storage.db import now_ms, transaction
 
 ROLE_LABELS = {
@@ -154,9 +154,17 @@ def simulations_table(conn: sqlite3.Connection) -> pd.DataFrame:
                 "fees": num("total_fees"),
                 "bh_gap": num("bh_gap_eur"),
                 "open_positions": r["open_positions"],
+                "calmar": None
+                if r["pnl_pct"] is None
+                else calmar_ratio(
+                    float(r["pnl_pct"]), float(r["max_drawdown_pct"]), r["closed_trades"]
+                ),
             }
         )
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if not frame.empty:  # sans aucun ratio (moins de 10 trades partout), colonne vide typée
+        frame["calmar"] = pd.to_numeric(frame["calmar"], errors="coerce").astype("float64")
+    return frame
 
 
 def _numbers(row: sqlite3.Row) -> Any:

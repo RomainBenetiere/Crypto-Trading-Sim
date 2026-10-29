@@ -191,6 +191,9 @@ async def test_app_running_shows_metrics_and_stop(app_db: Path) -> None:
     assert (
         len(at.dataframe) >= 4
     )  # top 5, positions ou buy & hold, toutes les simulations, indicateurs
+    at.radio(key="rank_metric").set_value("calmar").run()
+    assert not at.exception
+    assert any(m.label == "Meilleur ratio de Calmar" for m in at.metric)
     at.button(key="btn_stop").click().run()
     assert commands(app_db)[-1] == "stop"
 
