@@ -251,6 +251,16 @@ async def test_app_shows_shadow_portfolio(app_db: Path) -> None:
     assert any("auraient été envoyés" in m.value for m in at.markdown)
     assert any("P&L" in m.value and "Valeur totale" in m.value for m in at.markdown)
 
+    assert not [b for b in at.button if b.key == "btn_shadow_reset"]  # ombre en marche
+    at.button(key="btn_shadow_off").click().run()
+    at.button(key="btn_shadow_reset").click().run()
+    assert not at.exception
+    conn = connect(app_db, JournalMode.WAL)
+    assert production.read_state(conn).reset_requested_at is not None
+    conn.close()
+    at.run()
+    assert any("en attente du moteur" in i.value for i in at.info)
+
 
 async def test_app_live_section_lock_start_and_stops(app_db: Path) -> None:
     conn = connect(app_db, JournalMode.WAL)

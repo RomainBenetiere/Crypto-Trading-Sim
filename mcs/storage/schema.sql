@@ -214,7 +214,8 @@ CREATE TABLE IF NOT EXISTS production_state (
     balance_json     TEXT,
     balance_at       INTEGER,
     balance_error    TEXT,
-    updated_at       INTEGER NOT NULL
+    updated_at       INTEGER NOT NULL,
+    shadow_reset_requested_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS production_orders (

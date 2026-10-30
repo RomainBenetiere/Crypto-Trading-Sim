@@ -43,6 +43,15 @@ class ProductionState:
     balances: dict[str, tuple[Decimal, Decimal]] | None  # symbole → (disponible, en ordre)
     balance_at: int | None
     balance_error: str | None
+    reset_requested_at: int | None = None
+
+
+SHADOW_TABLES = (
+    "production_orders",
+    "production_positions",
+    "production_sim_state",
+    "production_values",
+)
 
 
 def read_state(conn: sqlite3.Connection) -> ProductionState:
@@ -60,6 +69,7 @@ def read_state(conn: sqlite3.Connection) -> ProductionState:
         balances=balances,
         balance_at=row["balance_at"],
         balance_error=row["balance_error"],
+        reset_requested_at=row["shadow_reset_requested_at"],
     )
 
 
@@ -73,6 +83,29 @@ def set_mode(conn: sqlite3.Connection, mode: Mode, now: int) -> None:
            WHERE id = 1""",
         (mode, now, mode, now),
     )
+
+
+def request_shadow_reset(conn: sqlite3.Connection, now: int) -> None:
+    """Écrit par le dashboard : l'ombre doit être arrêtée ; le moteur efface dans les 2 s."""
+    if read_state(conn).mode is not Mode.OFF:
+        raise ValueError("Arrêtez d'abord l'ombre.")
+    conn.execute(
+        "UPDATE production_state SET shadow_reset_requested_at = ?, updated_at = ? WHERE id = 1",
+        (now, now),
+    )
+
+
+def reset_shadow(conn: sqlite3.Connection, now: int) -> None:
+    """Appliqué par le moteur, ombre en pause : portefeuille ombre effacé (ordres, positions,
+    état, valeurs). Il repartira du capital engagé au prochain démarrage."""
+    with transaction(conn):
+        for table in SHADOW_TABLES:
+            conn.execute(f"DELETE FROM {table}")
+        conn.execute(
+            """UPDATE production_state SET shadow_reset_requested_at = NULL,
+                   capital_applied = NULL, updated_at = ? WHERE id = 1""",
+            (now,),
+        )
 
 
 def set_capital_applied(conn: sqlite3.Connection, capital: Decimal, now: int) -> None:

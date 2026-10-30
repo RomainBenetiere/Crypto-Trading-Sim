@@ -231,6 +231,12 @@ class Engine:
             return processed
 
     async def sync_shadow(self) -> None:
+        if production.read_state(self.conn).reset_requested_at is not None:
+            now = self.clock()
+            if self.shadow is not None:
+                await self.shadow.pause(now)
+            production.reset_shadow(self.conn, now)
+            log.info("Ombre remise à zéro.")
         if self.shadow is not None:
             await self.shadow.sync(self.status is Status.RUNNING, self.clock())
 

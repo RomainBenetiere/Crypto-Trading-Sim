@@ -142,6 +142,19 @@ async def test_shadow_follows_choice_state_and_capital(setup) -> None:  # type: 
     await command(restarted, Command.RESET)
     assert load_orders(conn, table="production_orders")
 
+    # Remise à zéro de l'ombre : refusée tant qu'elle tourne, puis portefeuille effacé.
+    production.set_mode(conn, production.Mode.SHADOW, clock())
+    with pytest.raises(ValueError):
+        production.request_shadow_reset(conn, clock())
+    production.set_mode(conn, production.Mode.OFF, clock())
+    production.request_shadow_reset(conn, clock())
+    await restarted.process_commands()
+    for table in production.SHADOW_TABLES:
+        assert not conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], table
+    state = production.read_state(conn)
+    assert state.reset_requested_at is None and state.capital_applied is None
+    assert production.active_choice(conn) is not None  # choix conservé
+
 
 def load_config(conn: sqlite3.Connection, sim_id: int):  # type: ignore[no-untyped-def]
     raw = conn.execute("SELECT config_json FROM simulations WHERE id = ?", (sim_id,)).fetchone()

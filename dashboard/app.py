@@ -882,9 +882,23 @@ def shadow_section(choice: production.Choice) -> None:
         if st.button("Arrêter l'ombre", key="btn_shadow_off"):
             production.set_mode(rw(), production.Mode.OFF, now_ms())
             st.rerun()
-    elif st.button("Démarrer l'ombre", key="btn_shadow_on", type="primary"):
-        production.set_mode(rw(), production.Mode.SHADOW, now_ms())
-        st.rerun()
+    elif state.reset_requested_at is not None:
+        st.info("Remise à zéro de l'ombre demandée : en attente du moteur.")
+    else:
+        has_portfolio = conn.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0] > 0
+        start, reset = st.columns([1, 3])
+        if start.button("Démarrer l'ombre", key="btn_shadow_on", type="primary"):
+            production.set_mode(rw(), production.Mode.SHADOW, now_ms())
+            st.rerun()
+        if has_portfolio:
+            with reset.popover("Remettre l'ombre à zéro"):
+                st.write(
+                    "Positions, ordres et historique de l'ombre seront effacés, sans vente "
+                    "enregistrée. L'ombre repartira du capital engagé au prochain démarrage."
+                )
+                if st.button("Confirmer la remise à zéro", key="btn_shadow_reset"):
+                    production.request_shadow_reset(rw(), now_ms())
+                    st.rerun()
     if shadow or conn.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]:
         st.markdown("##### Portefeuille ombre")
         live_positions(production.PRODUCTION_SIM_ID, float(choice.capital))

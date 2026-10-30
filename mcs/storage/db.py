@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -210,6 +210,10 @@ MIGRATIONS: dict[int, str] = {
         total_value  TEXT    NOT NULL,
         cash         TEXT    NOT NULL
     ) WITHOUT ROWID;
+    """,
+    11: """
+    -- Remise à zéro de l'ombre : demandée par le dashboard, appliquée par le moteur.
+    ALTER TABLE production_state ADD COLUMN shadow_reset_requested_at INTEGER;
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

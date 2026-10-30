@@ -110,6 +110,8 @@ Le schéma de la base est migré automatiquement au démarrage.
 
 L'onglet « Production » du dashboard permet de choisir un scénario parmi les 5 meilleures simulations, puis de démarrer le mode ombre : le scénario tourne sur son propre portefeuille (300 € par défaut), ordres calculés au carnet réel mais **jamais envoyés**. L'ombre ne tourne que lorsque les simulations sont en marche.
 
+« Arrêter l'ombre » met ses positions en pause, sans les vendre. Pour repartir de zéro, une fois l'ombre arrêtée : « Remettre l'ombre à zéro » efface son portefeuille (positions, ordres, historique), sans vente enregistrée ; le scénario choisi est conservé.
+
 Pour afficher le solde réel du compte (facultatif) :
 
 1. Sur Bitvavo : *Paramètres → API → Créer une clé*, cocher **uniquement « Consulter »** (ni « Trader », ni « Retirer ») ; restreindre si possible à l'IP publique du serveur.

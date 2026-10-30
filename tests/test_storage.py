@@ -169,6 +169,7 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE metrics DROP COLUMN peak_value;
         ALTER TABLE metrics DROP COLUMN open_positions;
         ALTER TABLE engine_state DROP COLUMN master_seed;
+        ALTER TABLE production_state DROP COLUMN shadow_reset_requested_at;
         PRAGMA user_version = 1;
         """
     )
@@ -178,5 +179,7 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
     assert {"notional", "liquidity", "reserved"} <= columns
     position_columns = {row["name"] for row in conn.execute("PRAGMA table_info(positions)")}
     assert "state_json" in position_columns
+    production_columns = {r["name"] for r in conn.execute("PRAGMA table_info(production_state)")}
+    assert "shadow_reset_requested_at" in production_columns
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()
