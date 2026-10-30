@@ -166,7 +166,7 @@ async def test_poll_balance_records_amounts_or_error(conn: sqlite3.Connection) -
 
     client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
     account = BitvavoAccount("cle", "secret", client=client, clock=lambda: 1_700_000_000_000)
-    await poll_balance(conn, account, 10)
+    assert await poll_balance(conn, account, 10)
     request = calls[0]
     assert request.method == "GET" and request.url.path == "/v2/balance"
     assert request.headers["bitvavo-access-key"] == "cle"
@@ -177,7 +177,7 @@ async def test_poll_balance_records_amounts_or_error(conn: sqlite3.Connection) -
     assert state.balances == {"EUR": (D("312.5"), D(0)), "ETH": (D("0.01"), D("0.002"))}
     assert state.balance_at == 10 and state.balance_error is None
 
-    await poll_balance(conn, account, 20)
+    assert not await poll_balance(conn, account, 20)
     state = production.read_state(conn)
     assert state.balance_at == 10 and state.balances is not None  # dernier solde gardé
     assert state.balance_error is not None and "305" in state.balance_error

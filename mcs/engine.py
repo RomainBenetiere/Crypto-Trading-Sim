@@ -89,6 +89,7 @@ HEARTBEAT_S = 30.0
 TICK_DELAY_MS = 3_000
 BOOK_TTL_S = 30.0
 BALANCE_POLL_S = 300.0
+BALANCE_RETRY_S = 30.0  # nouvel essai rapide après un échec passager (DNS, réseau)
 RESET_TABLES = (
     "orders",
     "positions",
@@ -643,25 +644,27 @@ async def run_engine() -> None:
 
 
 async def read_balances(conn: sqlite3.Connection, account: BitvavoAccount) -> None:
-    """Solde réel (lecture seule) toutes les 5 minutes, dès qu'une clé est configurée."""
+    """Solde réel (lecture seule) toutes les 5 minutes, 30 s après un échec."""
     try:
         while True:
-            await poll_balance(conn, account, now_ms())
-            await asyncio.sleep(BALANCE_POLL_S)
+            ok = await poll_balance(conn, account, now_ms())
+            await asyncio.sleep(BALANCE_POLL_S if ok else BALANCE_RETRY_S)
     finally:
         await account.aclose()
 
 
-async def poll_balance(conn: sqlite3.Connection, account: BitvavoAccount, now: int) -> None:
+async def poll_balance(conn: sqlite3.Connection, account: BitvavoAccount, now: int) -> bool:
+    """Lit et enregistre le solde ; False si la lecture a échoué (dernier solde conservé)."""
     try:
         balances = await account.balances()
     except (httpx.HTTPError, BitvavoError, ValueError) as exc:
         log.warning("Lecture du solde impossible (%s : %s).", type(exc).__name__, exc)
         production.record_balances(conn, None, f"{type(exc).__name__} : {exc}", now)
-        return
+        return False
     production.record_balances(
         conn, {b.symbol: (b.available, b.in_order) for b in balances}, None, now
     )
+    return True
 
 
 def main() -> None:

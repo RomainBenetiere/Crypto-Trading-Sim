@@ -1037,7 +1037,15 @@ def real_balance(state: production.ProductionState, capital: Decimal) -> None:
     st.markdown("##### Solde réel du compte Bitvavo")
     # Le moteur seul détient la clé : le dashboard s'en tient à ce qu'il a enregistré en base.
     if state.balance_error:
-        st.warning(f"Dernière lecture du solde en échec : {state.balance_error}")
+        kept = (
+            f" Solde affiché : dernière lecture réussie, le {fmt.timestamp(state.balance_at)}."
+            if state.balances is not None
+            else ""
+        )
+        st.warning(
+            f"Dernière lecture du solde en échec ({state.balance_error}), nouvel essai "
+            f"sous 30 s.{kept}"
+        )
     if state.balances is None:
         if not state.balance_error:
             st.info(
