@@ -32,6 +32,7 @@ REASON_LABELS = {
     "max_duration": "Durée max",
     "trend_filter": "Filtre de fond",
     "circuit_breaker": "Circuit breaker",
+    "emergency": "Arrêt d'urgence",
 }
 TILE_COLUMNS = 4
 

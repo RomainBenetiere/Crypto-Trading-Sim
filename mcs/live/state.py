@@ -102,7 +102,7 @@ class SimStateStore:
     (table `sim_state`, ou `production_sim_state` pour le mode production)."""
 
     def __init__(self, conn: sqlite3.Connection, table: str = "sim_state") -> None:
-        if table not in ("sim_state", "production_sim_state"):
+        if table not in ("sim_state", "production_sim_state", "live_sim_state"):
             raise ValueError(f"Table d'état inconnue : {table}")
         self.conn, self.table = conn, table
 

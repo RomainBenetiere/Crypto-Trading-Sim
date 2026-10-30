@@ -449,14 +449,17 @@ def sim_detail(sim_id: int, sim: pd.Series) -> None:
 
 
 @st.fragment(run_every=60)
-def live_positions(sim_id: int, initial: float | None = None) -> None:
-    """Positions d'une simulation ; avec `initial` (capital engagé), le portefeuille ombre."""
+def live_positions(
+    sim_id: int, initial: float | None = None, portfolio: str = "production"
+) -> None:
+    """Positions d'une simulation ; avec `initial` (capital engagé), le portefeuille de
+    production `portfolio` : « production » (ombre) ou « live » (ordres réels)."""
     conn = ro()
     prices = latest_prices(conn)
     taker = settings().fee_taker
     shadow = initial is not None
     details = positions_detail(
-        conn, sim_id, prices, taker, "production_positions" if shadow else "positions"
+        conn, sim_id, prices, taker, f"{portfolio}_positions" if shadow else "positions"
     )
     if details:
         st.dataframe(
@@ -483,7 +486,7 @@ def live_positions(sim_id: int, initial: float | None = None) -> None:
     else:
         st.info("Aucune position ouverte.")
     cash = (
-        cash_balance(conn, sim_id, Decimal(str(initial)), "production_orders")
+        cash_balance(conn, sim_id, Decimal(str(initial)), f"{portfolio}_orders")
         if initial is not None
         else cash_balance(conn, sim_id)
     )
@@ -767,15 +770,12 @@ SCALE_EXAMPLES = (Decimal(40), Decimal(10))
 
 def tab_production() -> None:
     st.subheader("Mode production")
-    st.info(
-        "Palier 2 : choix du scénario et mode « ombre ». **Aucun ordre réel n'est passé** ; "
-        "les ordres réels (palier 3) seront activés séparément, après validation."
-    )
     current = production.active_choice(ro())
     if current is None:
         st.markdown("Aucun scénario choisi pour l'instant.")
     else:
         production_summary(current)
+        live_section(current)
         shadow_section(current)
     table = simulations(data_version())
     if table.empty:
@@ -893,8 +893,92 @@ def shadow_section(choice: production.Choice) -> None:
     real_balance(state, choice.capital)
 
 
-def shadow_values() -> None:
-    rows = ro().execute("SELECT ts, total_value FROM production_values ORDER BY ts").fetchall()
+def live_section(choice: production.Choice) -> None:
+    """Mode réel (palier 3) : le dashboard ne fait que demander ; le moteur seul détient la
+    clé et envoie les ordres."""
+    conn = ro()
+    live = production.read_live(conn)
+    status = live.status
+    st.markdown("#### Mode réel (ordres envoyés à Bitvavo)")
+    label = production.LIVE_LABELS[status]
+    if status is not production.LiveStatus.OFF and live.started_at is not None:
+        label += f" depuis le {fmt.timestamp(live.started_at)}"
+    st.markdown(f"**État** : {label}")
+    if live.emergency_requested_at is not None:
+        st.error("Arrêt d'urgence en cours d'exécution par le moteur.")
+    if live.buys_blocked_day is not None and live.buys_blocked_day == live.day:
+        st.warning("Perte maximale du jour atteinte : achats bloqués jusqu'à demain.")
+    if live.last_event:
+        st.caption(f"Dernier événement : {live.last_event} ({fmt.timestamp(live.updated_at)})")
+    if not live.armed:
+        st.info(
+            "Mode réel verrouillé. Pour le déverrouiller : clé Bitvavo aux droits « Consulter » "
+            "et « Trader » (jamais « Retirer »), `PRODUCTION_LIVE=1` et "
+            "`PRODUCTION_MAX_CAPITAL` (plafond en €) dans `.env` sur le serveur, puis "
+            "`docker compose up -d engine`."
+        )
+        if status is not production.LiveStatus.OFF:
+            st.error(
+                "Le mode réel est demandé mais le moteur est verrouillé : positions non gérées."
+            )
+    else:
+        assert live.max_capital is not None
+        loss = float(production.DAILY_LOSS_LIMIT * 100)
+        st.caption(
+            f"Plafond engagé {fmt.eur(float(live.max_capital))} · perte maximale du jour "
+            f"{fmt.number(loss, 0)} % (achats bloqués jusqu'au lendemain) · stops toujours "
+            "surveillés, même en Hold · vos autres cryptos ne sont jamais touchées."
+        )
+    if status is production.LiveStatus.OFF:
+        if live.armed:
+            live_start_form()
+    else:
+        cols = st.columns(2)
+        if status is production.LiveStatus.ON and cols[0].button(
+            "Arrêter le réel (liquidation progressive)", key="btn_live_wind_down"
+        ):
+            production.wind_down_live(rw(), now_ms())
+            st.rerun()
+        with cols[1].popover("Arrêt d'urgence"):
+            st.markdown(
+                "Annule tous les ordres et **vend au marché toutes les positions du moteur**, "
+                "puis coupe le mode réel."
+            )
+            if st.button("Confirmer l'arrêt d'urgence", key="btn_live_emergency", type="primary"):
+                production.request_emergency(rw(), now_ms())
+                st.rerun()
+    if (
+        status is not production.LiveStatus.OFF
+        or conn.execute("SELECT COUNT(*) FROM live_orders").fetchone()[0]
+    ):
+        st.markdown("##### Portefeuille réel")
+        capital = live.capital_applied or choice.capital
+        live_positions(production.PRODUCTION_SIM_ID, float(capital), "live")
+        shadow_values("live_values", "live_values_chart")
+        shadow_orders("live_orders", "Derniers ordres réels")
+
+
+def live_start_form() -> None:
+    with st.form("live_start"):
+        st.markdown(
+            "Le démarrage envoie de **vrais ordres** sur votre compte Bitvavo avec le scénario "
+            "retenu ; l'ombre tourne en parallèle pour comparer. Saisissez "
+            f"« {production.LIVE_CONFIRMATION} » pour confirmer."
+        )
+        typed = st.text_input("Confirmation", key="live_confirmation")
+        if st.form_submit_button("Démarrer les ordres réels", type="primary"):
+            try:
+                production.start_live(rw(), typed, now_ms())
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+
+def shadow_values(table: str = "production_values", key: str = "shadow_values") -> None:
+    if table not in ("production_values", "live_values"):
+        raise ValueError(table)
+    rows = ro().execute(f"SELECT ts, total_value FROM {table} ORDER BY ts").fetchall()
     if len(rows) < 2:
         return
     figure = go.Figure(
@@ -909,7 +993,7 @@ def shadow_values() -> None:
     figure.update_layout(
         height=260, margin={"l": 10, "r": 10, "t": 10, "b": 10}, yaxis_title="Valeur (€)"
     )
-    st.plotly_chart(figure, width="stretch", key="shadow_values")
+    st.plotly_chart(figure, width="stretch", key=key)
 
 
 SIDE_LABELS = {"buy": "Achat", "sell": "Vente"}
@@ -921,12 +1005,14 @@ ORDER_STATUS_LABELS = {
 }
 
 
-def shadow_orders() -> None:
-    orders = load_orders(ro(), production.PRODUCTION_SIM_ID, "production_orders")[-20:][::-1]
+def shadow_orders(
+    table: str = "production_orders", title: str = "Derniers ordres qui auraient été envoyés"
+) -> None:
+    orders = load_orders(ro(), production.PRODUCTION_SIM_ID, table)[-20:][::-1]
     if not orders:
-        st.caption("Aucun ordre ombre pour l'instant (décisions à chaque clôture 4 h).")
+        st.caption("Aucun ordre pour l'instant (décisions à chaque clôture 4 h).")
         return
-    st.markdown("##### Derniers ordres qui auraient été envoyés")
+    st.markdown(f"##### {title}")
     st.dataframe(
         pd.DataFrame(
             {

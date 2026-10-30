@@ -1,5 +1,5 @@
-"""Mode production (SPEC §15) : choix du scénario (palier 1) et mode ombre (palier 2), sans
-aucun ordre réel.
+"""Mode production (SPEC §15) : choix du scénario (palier 1), mode ombre (palier 2) et état
+du mode réel (palier 3 ; les ordres sont envoyés par `mcs/broker/live.py`).
 
 Le scénario choisi parmi les meilleures simulations est figé dans `production_choices`
 (copie de sa configuration) ; un nouveau choix remplace le précédent, l'historique est gardé.
@@ -101,6 +101,165 @@ def record_balances(
                updated_at = ? WHERE id = 1""",
         (payload, now, now),
     )
+
+
+class LiveStatus(StrEnum):
+    OFF = "off"
+    ON = "on"
+    WINDING_DOWN = "winding_down"  # plus d'achat ; positions gérées jusqu'à leur clôture
+
+
+LIVE_LABELS = {
+    LiveStatus.OFF: "Arrêté",
+    LiveStatus.ON: "Ordres réels actifs",
+    LiveStatus.WINDING_DOWN: "Liquidation progressive (plus d'achat)",
+}
+# Perte maximale du jour (décision 45) : au-delà, achats bloqués jusqu'au lendemain.
+DAILY_LOSS_LIMIT = Decimal("0.10")
+LIVE_CONFIRMATION = "ORDRES RÉELS"
+
+
+@dataclass(frozen=True, slots=True)
+class LiveState:
+    status: LiveStatus
+    started_at: int | None
+    armed: bool  # double verrou du `.env` levé (écrit par le moteur)
+    max_capital: Decimal | None
+    capital_applied: Decimal | None
+    day: str | None
+    day_start_value: Decimal | None
+    buys_blocked_day: str | None
+    emergency_requested_at: int | None
+    last_event: str | None
+    updated_at: int
+
+
+def read_live(conn: sqlite3.Connection) -> LiveState:
+    row = conn.execute("SELECT * FROM live_state WHERE id = 1").fetchone()
+    return LiveState(
+        status=LiveStatus(row["status"]),
+        started_at=row["started_at"],
+        armed=bool(row["armed"]),
+        max_capital=_dec(row["max_capital"]),
+        capital_applied=_dec(row["capital_applied"]),
+        day=row["day"],
+        day_start_value=_dec(row["day_start_value"]),
+        buys_blocked_day=row["buys_blocked_day"],
+        emergency_requested_at=row["emergency_requested_at"],
+        last_event=row["last_event"],
+        updated_at=row["updated_at"],
+    )
+
+
+def set_live_armed(
+    conn: sqlite3.Connection, armed: bool, max_capital: Decimal | None, now: int
+) -> None:
+    """Écrit par le moteur au démarrage, d'après le `.env` (le dashboard n'y a pas accès)."""
+    conn.execute(
+        "UPDATE live_state SET armed = ?, max_capital = ?, updated_at = ? WHERE id = 1",
+        (int(armed), max_capital, now),
+    )
+
+
+def start_live(conn: sqlite3.Connection, confirmation: str, now: int) -> None:
+    """Demande du dashboard : démarre les ordres réels (double verrou et plafond vérifiés)."""
+    live = read_live(conn)
+    choice = active_choice(conn)
+    if confirmation.strip() != LIVE_CONFIRMATION:
+        raise ValueError(f"Saisissez « {LIVE_CONFIRMATION} » pour confirmer.")
+    if not live.armed or live.max_capital is None:
+        raise ValueError(
+            "Mode réel verrouillé : PRODUCTION_LIVE=1, PRODUCTION_MAX_CAPITAL et une clé "
+            "« Trader » sont requis dans .env, moteur recréé."
+        )
+    if choice is None:
+        raise ValueError("Choisissez d'abord un scénario.")
+    engine = conn.execute("SELECT status FROM engine_state WHERE id = 1").fetchone()
+    if engine is None or engine["status"] == "NOT_STARTED":
+        raise ValueError("Lancez d'abord les simulations : le mode réel suit le moteur.")
+    if choice.capital > live.max_capital:
+        raise ValueError(
+            f"Capital engagé ({choice.capital} €) supérieur au plafond PRODUCTION_MAX_CAPITAL "
+            f"({live.max_capital} €)."
+        )
+    if live.emergency_requested_at is not None:
+        raise ValueError("Arrêt d'urgence en cours.")
+    with transaction(conn):
+        conn.execute(
+            """UPDATE live_state SET status = 'on', started_at = COALESCE(started_at, ?),
+                   last_event = ?, updated_at = ? WHERE id = 1""",
+            (now, "Démarrage demandé depuis le dashboard.", now),
+        )
+        # L'ombre tourne en parallèle, pour comparer exécution réelle et simulée.
+        conn.execute(
+            """UPDATE production_state SET mode = 'shadow', started_at = COALESCE(started_at, ?),
+                   updated_at = ? WHERE id = 1""",
+            (now, now),
+        )
+
+
+def wind_down_live(conn: sqlite3.Connection, now: int) -> None:
+    """Arrêt normal : plus d'achat, positions gérées jusqu'à leur clôture."""
+    conn.execute(
+        """UPDATE live_state SET status = 'winding_down', last_event = ?, updated_at = ?
+           WHERE id = 1 AND status = 'on'""",
+        ("Arrêt progressif demandé : plus d'achat.", now),
+    )
+
+
+def request_emergency(conn: sqlite3.Connection, now: int) -> None:
+    """Arrêt d'urgence : le moteur annule les ordres, vend les positions du moteur au marché
+    et coupe le mode réel."""
+    conn.execute(
+        """UPDATE live_state SET emergency_requested_at = ?, last_event = ?, updated_at = ?
+           WHERE id = 1 AND status != 'off'""",
+        (now, "Arrêt d'urgence demandé.", now),
+    )
+
+
+def set_live_status(conn: sqlite3.Connection, status: LiveStatus, event: str, now: int) -> None:
+    """Écrit par le moteur (fin de liquidation, arrêt d'urgence exécuté)."""
+    conn.execute(
+        """UPDATE live_state SET status = ?, last_event = ?, updated_at = ?,
+               started_at = CASE WHEN ? = 'off' THEN NULL ELSE started_at END,
+               emergency_requested_at = CASE WHEN ? = 'off' THEN NULL
+                                             ELSE emergency_requested_at END
+           WHERE id = 1""",
+        (status, event, now, status, status),
+    )
+
+
+def record_live_event(conn: sqlite3.Connection, event: str, now: int) -> None:
+    conn.execute("UPDATE live_state SET last_event = ?, updated_at = ? WHERE id = 1", (event, now))
+
+
+def set_live_capital_applied(conn: sqlite3.Connection, capital: Decimal, now: int) -> None:
+    conn.execute(
+        "UPDATE live_state SET capital_applied = ?, updated_at = ? WHERE id = 1", (capital, now)
+    )
+
+
+def update_live_day(conn: sqlite3.Connection, day: str, value: Decimal, now: int) -> LiveState:
+    """Suivi de la perte du jour : valeur de départ à chaque nouveau jour (Europe/Paris) ;
+    achats bloqués jusqu'au lendemain si la valeur perd `DAILY_LOSS_LIMIT` ou plus."""
+    live = read_live(conn)
+    if live.day != day or live.day_start_value is None:
+        conn.execute(
+            "UPDATE live_state SET day = ?, day_start_value = ?, updated_at = ? WHERE id = 1",
+            (day, value, now),
+        )
+    elif live.buys_blocked_day != day and value <= live.day_start_value * (1 - DAILY_LOSS_LIMIT):
+        conn.execute(
+            """UPDATE live_state SET buys_blocked_day = ?, last_event = ?, updated_at = ?
+               WHERE id = 1""",
+            (
+                day,
+                f"Perte du jour ≥ {DAILY_LOSS_LIMIT * 100:.0f} % ({live.day_start_value:.2f} € → "
+                f"{value:.2f} €) : achats bloqués jusqu'à demain.",
+                now,
+            ),
+        )
+    return read_live(conn)
 
 
 @dataclass(frozen=True, slots=True)

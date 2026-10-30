@@ -124,3 +124,29 @@ Pour afficher le solde réel du compte (facultatif) :
    ```
 
 Le moteur lit le solde toutes les 5 minutes dès que la clé est présente et l'enregistre en base ; le dashboard l'affiche sans avoir accès à la clé. La clé ne quitte jamais le `.env` (ni base, ni journaux, ni dashboard).
+
+## 8. Mode production : ordres réels
+
+**Attention : ce mode envoie de vrais ordres sur votre compte Bitvavo.** Laissez d'abord tourner l'ombre quelques jours (section 7).
+
+1. Sur Bitvavo, remplacez la clé « Consulter » par une clé aux droits **« Consulter » et « Trader »**, jamais « Retirer » ; restreignez-la à l'IP publique du serveur.
+2. Approvisionnez le compte en euros (au moins le capital engagé).
+3. Dans `~/Crypto-Trading-Sim/.env` :
+   ```
+   BITVAVO_API_KEY=...
+   BITVAVO_API_SECRET=...
+   PRODUCTION_LIVE=1
+   PRODUCTION_MAX_CAPITAL=300
+   ```
+4. Recréer le moteur (le journal affiche « Mode réel déverrouillé ») :
+   ```bash
+   docker compose up -d engine
+   ```
+5. Onglet « Production » : le scénario choisi, simulations en marche, saisir « ORDRES RÉELS » puis « Démarrer les ordres réels ». L'ombre tourne en parallèle pour comparer.
+
+Garde-fous : plafond de capital engagé (`PRODUCTION_MAX_CAPITAL`) ; perte de 10 % dans la journée → achats bloqués jusqu'au lendemain ; en Hold, plus d'achat mais stops et take profit toujours gérés tant que le moteur tourne. **Si le moteur est arrêté, les stops ne sont plus surveillés** (ils ne sont pas posés chez Bitvavo).
+
+Pour arrêter :
+- « Arrêter le réel » : plus d'achat ; les positions restent gérées jusqu'à leur clôture, puis le mode s'éteint ;
+- « Arrêt d'urgence » : annule les ordres et vend au marché toutes les positions du moteur (vos autres cryptos ne sont pas touchées), puis coupe le mode ;
+- pour reverrouiller : `PRODUCTION_LIVE=0` dans `.env`, puis `docker compose up -d engine`.

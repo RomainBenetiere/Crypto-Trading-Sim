@@ -13,7 +13,7 @@ COLUMNS = (
     "sim_id, market, side, order_type, status, reason, quantity, price, notional, fee, "
     "liquidity, reserved, book_bid, book_ask, created_at, expires_at, filled_at"
 )
-ORDER_TABLES = frozenset({"orders", "production_orders"})
+ORDER_TABLES = frozenset({"orders", "production_orders", "live_orders"})
 
 
 def _table(table: str) -> str:
@@ -40,11 +40,11 @@ def insert_order(conn: sqlite3.Connection, order: Order, table: str = "orders") 
 def update_order(conn: sqlite3.Connection, order: Order, table: str = "orders") -> None:
     with transaction(conn):
         conn.execute(
-            f"""UPDATE {_table(table)} SET status = ?, price = ?, notional = ?, fee = ?,
-                   liquidity = ?, reserved = ?, filled_at = ? WHERE id = ?""",
+            f"""UPDATE {_table(table)} SET status = ?, quantity = ?, price = ?, notional = ?,
+                   fee = ?, liquidity = ?, reserved = ?, filled_at = ? WHERE id = ?""",
             (
-                order.status, order.price, order.notional, order.fee, order.liquidity,
-                order.reserved, order.filled_at, order.id,
+                order.status, order.quantity, order.price, order.notional, order.fee,
+                order.liquidity, order.reserved, order.filled_at, order.id,
             ),
         )  # fmt: skip
 

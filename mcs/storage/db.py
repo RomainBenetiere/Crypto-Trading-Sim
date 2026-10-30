@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -137,6 +137,80 @@ MIGRATIONS: dict[int, str] = {
         cash         TEXT    NOT NULL
     ) WITHOUT ROWID;
     """,
+    10: """
+    -- Mode réel (SPEC §15, palier 3) : ordres réels envoyés à Bitvavo pour le scénario choisi.
+    -- `armed` et `max_capital` sont écrits par le moteur depuis `.env` (double verrou) ; le
+    -- dashboard demande le démarrage, l'arrêt progressif ou l'arrêt d'urgence.
+    CREATE TABLE IF NOT EXISTS live_state (
+        id                      INTEGER PRIMARY KEY CHECK (id = 1),
+        status                  TEXT    NOT NULL DEFAULT 'off'
+                                        CHECK (status IN ('off', 'on', 'winding_down')),
+        started_at              INTEGER,
+        armed                   INTEGER NOT NULL DEFAULT 0,
+        max_capital             TEXT,
+        capital_applied         TEXT,
+        day                     TEXT,
+        day_start_value         TEXT,
+        buys_blocked_day        TEXT,
+        emergency_requested_at  INTEGER,
+        last_event              TEXT,
+        updated_at              INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS live_orders (
+        id                 INTEGER PRIMARY KEY,
+        sim_id             INTEGER NOT NULL,
+        market             TEXT    NOT NULL,
+        order_type         TEXT    NOT NULL CHECK (order_type IN ('market', 'limit')),
+        side               TEXT    NOT NULL CHECK (side IN ('buy', 'sell')),
+        status             TEXT    NOT NULL
+                               CHECK (status IN ('open', 'filled', 'cancelled', 'expired')),
+        price              TEXT,
+        quantity           TEXT    NOT NULL,
+        notional           TEXT,
+        fee                TEXT,
+        liquidity          TEXT    CHECK (liquidity IN ('maker', 'taker')),
+        reserved           TEXT,
+        reason             TEXT    NOT NULL,
+        book_bid           TEXT,
+        book_ask           TEXT,
+        created_at         INTEGER NOT NULL,
+        expires_at         INTEGER,
+        filled_at          INTEGER,
+        client_order_id    TEXT,
+        exchange_order_id  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS live_positions (
+        id               INTEGER PRIMARY KEY,
+        sim_id           INTEGER NOT NULL,
+        market           TEXT    NOT NULL,
+        lots             INTEGER NOT NULL,
+        quantity         TEXT    NOT NULL,
+        avg_entry_price  TEXT    NOT NULL,
+        invested_cost    TEXT    NOT NULL,
+        buy_fees         TEXT    NOT NULL,
+        stop             TEXT,
+        trailing         TEXT,
+        take_profit      TEXT,
+        state_json       TEXT    NOT NULL DEFAULT '{}',
+        opened_at        INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        UNIQUE (sim_id, market)
+    );
+
+    CREATE TABLE IF NOT EXISTS live_sim_state (
+        sim_id      INTEGER PRIMARY KEY,
+        state_json  TEXT    NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS live_values (
+        ts           INTEGER PRIMARY KEY,
+        total_value  TEXT    NOT NULL,
+        cash         TEXT    NOT NULL
+    ) WITHOUT ROWID;
+    """,
 }
 BUSY_TIMEOUT_MS = 30_000
 NETWORK_FILESYSTEMS = frozenset(
@@ -192,6 +266,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             {script}
             INSERT OR IGNORE INTO engine_state (id, updated_at) VALUES (1, {now_ms()});
             INSERT OR IGNORE INTO production_state (id, updated_at) VALUES (1, {now_ms()});
+            INSERT OR IGNORE INTO live_state (id, updated_at) VALUES (1, {now_ms()});
             PRAGMA user_version = {SCHEMA_VERSION};
             COMMIT;
             """

@@ -37,6 +37,11 @@ class Settings:
     fee_maker: Decimal = DEFAULT_FEE_MAKER
     fee_taker: Decimal = DEFAULT_FEE_TAKER
     optimizer_workers: int = 4
+    # Mode réel (palier 3) : double verrou, activé seulement avec PRODUCTION_LIVE=1 et un
+    # plafond de capital ; `operator_id` identifie le moteur auprès de Bitvavo.
+    production_live: bool = False
+    production_max_capital: Decimal | None = None
+    operator_id: int = 1
     # Secrets : jamais affichés (repr=False) ni journalisés.
     api_key: str | None = field(default=None, repr=False)
     api_secret: str | None = field(default=None, repr=False)
@@ -95,6 +100,35 @@ def parse_workers(raw: str | None) -> int:
     return int(value)
 
 
+def parse_flag(raw: str | None, name: str) -> bool:
+    value = (_blank_to_none(raw) or "0").lower()
+    if value not in ("0", "1", "true", "false"):
+        raise ConfigError(f"{name} invalide : {raw!r} (0 ou 1).")
+    return value in ("1", "true")
+
+
+def parse_max_capital(raw: str | None) -> Decimal | None:
+    value = _blank_to_none(raw)
+    if value is None:
+        return None
+    try:
+        capital = Decimal(value)
+    except InvalidOperation as exc:
+        raise ConfigError(f"PRODUCTION_MAX_CAPITAL invalide : {raw!r} (ex. 300).") from exc
+    if not capital.is_finite() or capital <= 0:
+        raise ConfigError(f"PRODUCTION_MAX_CAPITAL doit être positif : {raw!r}.")
+    return capital
+
+
+def parse_operator_id(raw: str | None) -> int:
+    value = _blank_to_none(raw)
+    if value is None:
+        return 1
+    if not value.isdigit() or not 1 <= int(value) < 2**63:
+        raise ConfigError(f"BITVAVO_OPERATOR_ID invalide : {raw!r} (entier positif).")
+    return int(value)
+
+
 def _blank_to_none(value: str | None) -> str | None:
     if value is None:
         return None
@@ -127,6 +161,9 @@ def load_settings(env_file: Path | str | None = ".env", base_dir: Path | None = 
         fee_maker=parse_fee(values.get("FEE_MAKER"), DEFAULT_FEE_MAKER, "FEE_MAKER"),
         fee_taker=parse_fee(values.get("FEE_TAKER"), DEFAULT_FEE_TAKER, "FEE_TAKER"),
         optimizer_workers=parse_workers(values.get("OPTIMIZER_WORKERS")),
+        production_live=parse_flag(values.get("PRODUCTION_LIVE"), "PRODUCTION_LIVE"),
+        production_max_capital=parse_max_capital(values.get("PRODUCTION_MAX_CAPITAL")),
+        operator_id=parse_operator_id(values.get("BITVAVO_OPERATOR_ID")),
         api_key=_blank_to_none(values.get("BITVAVO_API_KEY")),
         api_secret=_blank_to_none(values.get("BITVAVO_API_SECRET")),
     )
@@ -141,6 +178,9 @@ _KEYS = frozenset(
         "FEE_MAKER",
         "FEE_TAKER",
         "OPTIMIZER_WORKERS",
+        "PRODUCTION_LIVE",
+        "PRODUCTION_MAX_CAPITAL",
+        "BITVAVO_OPERATOR_ID",
         "BITVAVO_API_KEY",
         "BITVAVO_API_SECRET",
     }

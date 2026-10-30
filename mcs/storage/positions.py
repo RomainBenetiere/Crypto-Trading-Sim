@@ -10,7 +10,7 @@ from decimal import Decimal
 from mcs.risk.position import Position
 from mcs.storage.db import transaction
 
-POSITION_TABLES = frozenset({"positions", "production_positions"})
+POSITION_TABLES = frozenset({"positions", "production_positions", "live_positions"})
 
 
 class SqlitePositionStore:

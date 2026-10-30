@@ -39,6 +39,7 @@ from mcs import production
 from mcs.backtest import Dataset, load_dataset
 from mcs.bitvavo.account import BitvavoAccount
 from mcs.bitvavo.rest import BitvavoError, BitvavoRest
+from mcs.bitvavo.trading import BitvavoTrading
 from mcs.bitvavo.ws import TickerState
 from mcs.broker.base import Liquidity, Side
 from mcs.broker.book import BookProvider, CachedBookProvider, max_quantity_for_budget, walk_quantity
@@ -49,6 +50,7 @@ from mcs.collector import LiveCollector
 from mcs.config import load_settings
 from mcs.live.context import LiveContext
 from mcs.live.production import ShadowRunner
+from mcs.live.real import LiveRunner
 from mcs.live.state import (
     Command,
     SimStateStore,
@@ -119,6 +121,8 @@ class Engine:
         data_loader: Callable[[sqlite3.Connection, list[str]], Dataset] = load_dataset,
         optimizer_workers: int = 4,
         optimizer_launcher: Callable[[int, bool], Any] = launch_optimizer,
+        trading: BitvavoTrading | None = None,
+        max_capital: Decimal | None = None,
     ) -> None:
         self.conn, self.fees, self.books = conn, fees, books
         self.tickers = tickers if tickers is not None else {}
@@ -132,6 +136,10 @@ class Engine:
         self.ctx: LiveContext | None = None
         self.sims: dict[int, Simulation] = {}
         self.shadow: ShadowRunner | None = None
+        # Mode réel (palier 3) : seulement si le double verrou du `.env` est levé.
+        self.trading = trading if max_capital is not None else None
+        self.max_capital = max_capital
+        self.live: LiveRunner | None = None
         self.metrics: dict[int, SimMetrics] = {}
         self.last_1h = self.last_4h = 0
         # Les commandes, les bougies 1 min et les clôtures ne s'entrelacent jamais.
@@ -144,6 +152,13 @@ class Engine:
         now = self.clock()
         state = read_state(self.conn)
         self.status = state.status
+        armed = self.trading is not None
+        production.set_live_armed(self.conn, armed, self.max_capital, now)
+        if not armed and production.read_live(self.conn).status is not production.LiveStatus.OFF:
+            log.error("Mode réel demandé mais verrouillé (.env) : positions réelles non gérées.")
+            production.record_live_event(
+                self.conn, "Moteur sans PRODUCTION_LIVE ni clé : positions réelles non gérées.", now
+            )
         if state.status is not Status.NOT_STARTED:
             self._load_runtime(list(state.basket))
             if state.heartbeat_at is not None and now - state.heartbeat_at > OUTAGE_AFTER_MS:
@@ -167,6 +182,15 @@ class Engine:
         self.shadow = ShadowRunner(
             self.conn, self.fees, self.books, {m: rules[m] for m in basket}, basket
         )
+        if self.trading is not None and self.max_capital is not None:
+            self.live = LiveRunner(
+                self.conn,
+                self.fees,
+                self.trading,
+                {m: rules[m] for m in basket},
+                basket,
+                self.max_capital,
+            )
         self.sims = {}
         self.metrics = load_metrics(self.conn)
         for stored in load_simulations(self.conn):
@@ -192,7 +216,7 @@ class Engine:
 
     def _clear_runtime(self) -> None:
         self.broker, self.ctx, self.sims, self.metrics = None, None, {}, {}
-        self.shadow = None
+        self.shadow = self.live = None
 
     # --- Commandes ------------------------------------------------------------------------
 
@@ -202,11 +226,19 @@ class Engine:
         async with self.lock:
             processed = await self._process_next_command()
             await self.sync_shadow()
+            await self.sync_live()
             return processed
 
     async def sync_shadow(self) -> None:
         if self.shadow is not None:
             await self.shadow.sync(self.status is Status.RUNNING, self.clock())
+
+    async def sync_live(self) -> None:
+        if self.live is not None:
+            try:
+                await self.live.sync(self.status is Status.RUNNING, self.ctx, self.clock())
+            except Exception:
+                log.exception("Réel : échec de l'alignement sur l'état demandé.")
 
     async def _process_next_command(self) -> bool:
         command = next_command(self.conn)
@@ -291,6 +323,8 @@ class Engine:
 
     async def _reset(self, now: int) -> str:
         self._require(Status.HOLD, "Remettre à zéro")
+        if production.read_live(self.conn).status is not production.LiveStatus.OFF:
+            raise EngineError("arrêtez d'abord le mode réel (positions réelles en cours).")
         with transaction(self.conn):
             for table in RESET_TABLES:
                 self.conn.execute(f"DELETE FROM {table}")
@@ -336,6 +370,14 @@ class Engine:
             await self._on_minute_candle(candle)
 
     async def _on_minute_candle(self, candle: Candle) -> None:
+        live = self.live
+        if live is not None and live.sim is not None and self.ctx is not None:
+            # Stops réels surveillés même en Hold (décision 45).
+            try:
+                self.ctx.set_now(self.clock())
+                await live.on_candle(candle, self.clock())
+            except Exception:
+                log.exception("Réel : échec du traitement de la bougie %s.", candle.market)
         if self.status is not Status.RUNNING or self.broker is None or self.ctx is None:
             return
         now = self.clock()
@@ -384,6 +426,11 @@ class Engine:
             if shadow is not None and self.shadow is not None:
                 for order in self.shadow.broker.expire_orders(now):
                     shadow.on_order_closed(order)
+        if self.live is not None and self.live.sim is not None:
+            try:
+                await self.live.tick(self.ctx, now)
+            except Exception:
+                log.exception("Réel : échec du suivi des ordres.")
         hour = floor_ts(now, "1h")
         if hour > self.last_1h:
             self.last_1h = hour
@@ -392,10 +439,14 @@ class Engine:
             self.ctx.set_now(now)
             if self.status is Status.RUNNING:
                 await self._hourly(now)
+            elif self.live is not None and self.live.sim is not None:
+                await self._hourly_sims(now, [self.live.sim])  # stops réels gérés en Hold
             self.write_portfolio_values(hour)
             self.update_metrics(now)
             if self.shadow is not None and self.shadow.sim is not None:
                 self.shadow.write_value(hour, self.shadow.sim.portfolio_value(self.ctx))
+            if self.live is not None and self.live.sim is not None:
+                self.live.write_value(hour, self.live.sim.portfolio_value(self.ctx))
         bar = floor_ts(now, "4h")
         if bar > self.last_4h:
             if not data_ok:
@@ -406,15 +457,19 @@ class Engine:
         return False
 
     async def _hourly(self, now: int) -> None:
+        sims = list(self.sims.values())
+        for runner in (self.shadow, self.live):
+            if runner is not None and runner.sim is not None:
+                sims.append(runner.sim)
+        await self._hourly_sims(now, sims)
+
+    async def _hourly_sims(self, now: int, sims: list[Simulation]) -> None:
         assert self.ctx is not None
         self.ctx.set_now(now)
         highs = {}
         for market, data in self.ctx.data.markets.items():
             if len(data.h1):
                 highs[market] = Decimal(repr(float(data.h1["high"].iloc[-1])))
-        sims = list(self.sims.values())
-        if self.shadow is not None and self.shadow.sim is not None:
-            sims.append(self.shadow.sim)
         for sim in sims:
             if sim.config.exits.recalc is StopRecalc.HOURLY and sim.positions:
                 await sim.on_1h_close(now, self.ctx, highs)
@@ -425,8 +480,9 @@ class Engine:
         started = self.clock()
         ctx.set_now(now)
         configs = [s.config for s in self.sims.values()]
-        if self.shadow is not None and self.shadow.sim is not None:
-            configs.append(self.shadow.sim.config)
+        for runner in (self.shadow, self.live):
+            if runner is not None and runner.sim is not None:
+                configs.append(runner.sim.config)
         await asyncio.to_thread(ctx.warm, configs)
         for sim_id in sorted(self.sims):
             # Une simulation à la fois sous le verrou ; entre deux, la boucle traite les
@@ -445,6 +501,13 @@ class Engine:
                 ctx.set_now(now)
                 await shadow.sim.on_4h_close(now, ctx)
                 shadow.save(now)
+            live = self.live
+            if self.status is Status.RUNNING and live is not None and live.sim is not None:
+                ctx.set_now(now)
+                try:
+                    await live.on_4h_close(ctx, now)
+                except Exception:
+                    log.exception("Réel : échec de la clôture 4 h.")
         log.info("Clôture 4 h traitée en %.1f s.", (self.clock() - started) / 1000)
 
     def update_metrics(self, now: int) -> None:
@@ -497,12 +560,27 @@ async def run_engine() -> None:
                 await engine.on_minute_candle(candle)
 
         collector = LiveCollector(conn, rest, settings.basket, on_candle=on_candle)
+        trading = None
+        if (
+            settings.production_live
+            and settings.production_max_capital is not None
+            and settings.api_key
+            and settings.api_secret
+        ):
+            trading = BitvavoTrading(settings.api_key, settings.api_secret, settings.operator_id)
+            log.warning(
+                "Mode réel déverrouillé (plafond %s €) : ordres réels possibles sur demande du "
+                "dashboard.",
+                settings.production_max_capital,
+            )
         engine = Engine(
             conn,
             fees,
             CachedBookProvider(rest, ttl_s=BOOK_TTL_S),
             tickers=collector.ws.tickers,
             optimizer_workers=settings.optimizer_workers,
+            trading=trading,
+            max_capital=settings.production_max_capital,
         )
         engine.startup()
         log.info("Moteur démarré (état %s).", engine.status.value)
@@ -559,6 +637,8 @@ async def run_engine() -> None:
             for task in tasks:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            if trading is not None:
+                await trading.aclose()
             conn.close()
 
 

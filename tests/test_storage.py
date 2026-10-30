@@ -41,6 +41,11 @@ EXPECTED_TABLES = {
     "production_positions",
     "production_sim_state",
     "production_values",
+    "live_state",
+    "live_orders",
+    "live_positions",
+    "live_sim_state",
+    "live_values",
 }
 
 

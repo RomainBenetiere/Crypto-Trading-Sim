@@ -42,6 +42,7 @@ class Reason(StrEnum):
     MAX_DURATION = "max_duration"
     TREND_FILTER = "trend_filter"
     CIRCUIT_BREAKER = "circuit_breaker"
+    EMERGENCY = "emergency"  # arrêt d'urgence du mode réel (table `live_orders` seulement)
 
 
 # Stops déclenchés : pénalité d'exécution supplémentaire (SPEC §5 et §13).
@@ -56,6 +57,8 @@ class RejectReason(StrEnum):
     INSUFFICIENT_QUANTITY = "insufficient_quantity"
     INVALID_PRICE = "invalid_price"
     EMPTY_BOOK = "empty_book"
+    RISK_LIMIT = "risk_limit"  # garde-fou du mode réel (plafond, perte du jour, arrêt)
+    EXCHANGE_ERROR = "exchange_error"  # ordre refusé ou injoignable chez Bitvavo
 
 
 @dataclass(frozen=True, slots=True)

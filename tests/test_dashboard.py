@@ -250,3 +250,37 @@ async def test_app_shows_shadow_portfolio(app_db: Path) -> None:
     assert any("Portefeuille ombre" in m.value for m in at.markdown)
     assert any("auraient été envoyés" in m.value for m in at.markdown)
     assert any("P&L" in m.value and "Valeur totale" in m.value for m in at.markdown)
+
+
+async def test_app_live_section_lock_start_and_stops(app_db: Path) -> None:
+    conn = connect(app_db, JournalMode.WAL)
+    prepare(conn)
+    engine = await run_live(conn, bars=2)
+    production.choose(conn, 1, Decimal(300), "pnl", engine.clock())
+    conn.close()
+    at = run_app()
+    assert any("Mode réel verrouillé" in i.value for i in at.info)
+    assert not [b for b in at.button if b.key == "btn_live_emergency"]
+
+    conn = connect(app_db, JournalMode.WAL)
+    production.set_live_armed(conn, True, Decimal(300), 1)
+    conn.close()
+    at = run_app()
+    at.text_input(key="live_confirmation").input("oui")
+    at.button[[b.label for b in at.button].index("Démarrer les ordres réels")].click().run()
+    assert any("ORDRES RÉELS" in e.value for e in at.error)
+    at.text_input(key="live_confirmation").input("ORDRES RÉELS")
+    at.button[[b.label for b in at.button].index("Démarrer les ordres réels")].click().run()
+    assert not at.exception
+    conn = connect(app_db, JournalMode.WAL)
+    assert production.read_live(conn).status is production.LiveStatus.ON
+    conn.close()
+
+    at.button(key="btn_live_wind_down").click().run()
+    conn = connect(app_db, JournalMode.WAL)
+    assert production.read_live(conn).status is production.LiveStatus.WINDING_DOWN
+    conn.close()
+    at.button(key="btn_live_emergency").click().run()
+    conn = connect(app_db, JournalMode.WAL)
+    assert production.read_live(conn).emergency_requested_at is not None
+    conn.close()
