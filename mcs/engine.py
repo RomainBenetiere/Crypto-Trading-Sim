@@ -563,11 +563,10 @@ async def run_engine() -> None:
 
 
 async def read_balances(conn: sqlite3.Connection, account: BitvavoAccount) -> None:
-    """Solde réel (lecture seule) toutes les 5 minutes, quand le mode production est actif."""
+    """Solde réel (lecture seule) toutes les 5 minutes, dès qu'une clé est configurée."""
     try:
         while True:
-            if production.read_state(conn).mode is not production.Mode.OFF:
-                await poll_balance(conn, account, now_ms())
+            await poll_balance(conn, account, now_ms())
             await asyncio.sleep(BALANCE_POLL_S)
     finally:
         await account.aclose()

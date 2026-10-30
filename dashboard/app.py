@@ -949,17 +949,18 @@ def shadow_orders() -> None:
 
 def real_balance(state: production.ProductionState, capital: Decimal) -> None:
     st.markdown("##### Solde réel du compte Bitvavo")
-    if not settings().api_key or not settings().api_secret:
-        st.info(
-            "Aucune clé API configurée. Créez sur Bitvavo une clé avec le seul droit "
-            "« Consulter » (ni trading, ni retrait), ajoutez `BITVAVO_API_KEY` et "
-            "`BITVAVO_API_SECRET` dans `.env` sur le serveur, puis redémarrez le moteur."
-        )
-        return
+    # Le moteur seul détient la clé : le dashboard s'en tient à ce qu'il a enregistré en base.
     if state.balance_error:
         st.warning(f"Dernière lecture du solde en échec : {state.balance_error}")
     if state.balances is None:
-        st.caption("Solde lu toutes les 5 minutes quand le mode ombre est actif ; pas encore lu.")
+        if not state.balance_error:
+            st.info(
+                "Solde pas encore lu par le moteur. Créez sur Bitvavo une clé avec le seul droit "
+                "« Consulter » (ni trading, ni retrait), ajoutez `BITVAVO_API_KEY` et "
+                "`BITVAVO_API_SECRET` dans `.env` sur le serveur, puis recréez le moteur avec "
+                "`docker compose up -d engine` (un simple `restart` ne relit pas `.env`). "
+                "Le solde est ensuite lu toutes les 5 minutes."
+            )
         return
     prices = latest_prices(ro())
     rows = []

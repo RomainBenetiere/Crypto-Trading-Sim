@@ -208,7 +208,7 @@ async def test_app_running_shows_metrics_and_stop(app_db: Path) -> None:
     assert not at.exception
     state = production.read_state(connect(app_db, JournalMode.WAL))
     assert state.mode is production.Mode.SHADOW
-    assert any("Aucune clé API configurée" in i.value for i in at.info)
+    assert any("Solde pas encore lu" in i.value for i in at.info)
     at.button(key="btn_shadow_off").click().run()
     assert production.read_state(connect(app_db, JournalMode.WAL)).mode is production.Mode.OFF
     at.button(key="btn_stop").click().run()

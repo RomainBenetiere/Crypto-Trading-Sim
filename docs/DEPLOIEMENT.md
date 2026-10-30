@@ -118,9 +118,9 @@ Pour afficher le solde réel du compte (facultatif) :
    BITVAVO_API_KEY=...
    BITVAVO_API_SECRET=...
    ```
-3. Redémarrer le moteur :
+3. Recréer le moteur (un `docker compose restart` ne relit pas `.env`) :
    ```bash
    docker compose up -d engine
    ```
 
-Le solde est lu toutes les 5 minutes tant que le mode ombre est actif. La clé ne quitte jamais le `.env` (ni base, ni journaux, ni dashboard).
+Le moteur lit le solde toutes les 5 minutes dès que la clé est présente et l'enregistre en base ; le dashboard l'affiche sans avoir accès à la clé. La clé ne quitte jamais le `.env` (ni base, ni journaux, ni dashboard).

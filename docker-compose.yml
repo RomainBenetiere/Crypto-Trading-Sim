@@ -25,6 +25,14 @@ services:
     command: ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0",
               "--server.port=8501", "--server.headless=true",
               "--browser.gatherUsageStats=false"]
+    # La clé Bitvavo ne sert qu'au moteur : le dashboard lit le solde en base.
+    environment:
+      DB_PATH: /data/mcs.sqlite
+      SQLITE_JOURNAL_MODE: WAL
+      LOG_DIR: /app/logs
+      TZ: Europe/Paris
+      BITVAVO_API_KEY: ""
+      BITVAVO_API_SECRET: ""
     # Réseau local uniquement (décision 35) : ne pas exposer ce port à Internet.
     ports:
       - "8501:8501"
