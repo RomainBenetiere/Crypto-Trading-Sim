@@ -35,5 +35,6 @@ python -m mcs.optimizer run --workers 8  # optimisation 70/30 des jumelles optim
 python -m mcs.engine                     # moteur live (collecte + 300 simulations + commandes)
 streamlit run dashboard/app.py
 python -m mcs.health --hours 72          # rapport de santé (rodage)
+python -m mcs.ideal                      # simulations idéales P&L / Calmar déduites de la tornade (--db, --json)
 python -m mcs.control status             # pilotage sans dashboard (start, stop, resume, reset --yes…)
 ```
