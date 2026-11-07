@@ -415,7 +415,18 @@ class Simulation:
             position.tp_order_id = None
         position.take_profit = level
         quantity = take_profit_quantity(self.config, position)
-        if level is not None and quantity * level >= self.broker.min_order_quote(market):
+        if (
+            level is not None
+            and quantity < position.quantity
+            and not (
+                self.broker.meets_minimum(market, quantity, level)
+                and self.broker.meets_minimum(market, position.quantity - quantity, level)
+            )
+        ):
+            # Take profit partiel : si la moitié vendue, ou celle qui resterait, passe sous
+            # le minimum d'ordre du marché, le take profit porte sur toute la position.
+            quantity = position.quantity
+        if level is not None and self.broker.meets_minimum(market, quantity, level):
             placed = await self.broker.place_limit_sell(
                 self.sim_id, market, level, quantity, Reason.TAKE_PROFIT, now
             )

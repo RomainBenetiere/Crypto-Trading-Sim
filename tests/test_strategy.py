@@ -2,6 +2,7 @@
 renforcement, pause, circuit breaker, filtre de fond, persistance des positions."""
 
 import sqlite3
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
@@ -33,7 +34,7 @@ from mcs.strategy.config import (
 )
 from mcs.strategy.context import FramesContext
 from mcs.strategy.simulation import PendingEntry
-from tests.strategy_harness import BAR, MARKET, Harness, Switch
+from tests.strategy_harness import BAR, MARKET, RULES, Harness, Switch
 
 D = Decimal
 
@@ -331,6 +332,28 @@ async def test_partial_take_profit_then_trailing(conn: sqlite3.Connection) -> No
     assert pos.quantity == quantity - quantity * D("0.5")
     assert pos.stop == pos.avg_entry_price  # sans trailing : stop au prix d'entrée
     assert pos.tp_order_id is None
+
+
+async def test_partial_take_profit_below_minimum_takes_whole_position(
+    conn: sqlite3.Connection,
+) -> None:
+    main = Switch(buy=True)
+    config = make_config(
+        main, take_profit=TakeProfitConfig(TakeProfitType.PARTIAL, r_multiple=D(1))
+    )
+    h = Harness(conn, config)
+    await h.bar(100.0)
+    pos = position(h)
+    # Minimum en quantité entre la moitié et la totalité de la position (cas UP-EUR réel).
+    h.broker.rules[MARKET] = replace(RULES, min_order_base=pos.quantity * D("0.75"))
+    await h.sim.resync_take_profits(h.now)
+    tp_order = next(o for o in h.broker.open_orders(1) if o.id == pos.tp_order_id)
+    assert tp_order.quantity == pos.quantity
+    tp = pos.take_profit
+    main.buy = False
+    await h.bar(float(tp) + 1, high=float(tp) + 1)
+    assert MARKET not in h.sim.positions
+    assert load_orders(conn, 1)[-1].reason is Reason.TAKE_PROFIT
 
 
 async def test_stop_cancels_pending_take_profit(conn: sqlite3.Connection) -> None:

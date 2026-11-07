@@ -150,3 +150,6 @@ class Broker(Protocol):
 
     def min_order_quote(self, market: str) -> Decimal:
         """Montant minimum d'un ordre sur ce marché (en €, hors frais)."""
+
+    def meets_minimum(self, market: str, quantity: Decimal, price: Decimal) -> bool:
+        """L'ordre respecte les minimums du marché, en quantité et en montant."""

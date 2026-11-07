@@ -279,6 +279,9 @@ class HistoricalBroker:
     def min_order_quote(self, market: str) -> Decimal:
         return self.ctx.data.markets[market].rules.min_order_quote
 
+    def meets_minimum(self, market: str, quantity: Decimal, price: Decimal) -> bool:
+        return self._rules(market).check_minimum(quantity, price) is None
+
     def _rules(self, market: str) -> MarketRules:
         return self.ctx.data.markets[market].rules
 

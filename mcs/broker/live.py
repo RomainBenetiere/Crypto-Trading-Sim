@@ -116,6 +116,10 @@ class BitvavoBroker:
         rules = self.rules.get(market)
         return rules.min_order_quote if rules is not None else Decimal(0)
 
+    def meets_minimum(self, market: str, quantity: Decimal, price: Decimal) -> bool:
+        rules = self.rules.get(market)
+        return rules is None or rules.check_minimum(quantity, price) is None
+
     def open_orders(self, sim_id: int) -> list[Order]:
         return list(self.accounts[sim_id].open_orders.values())
 
