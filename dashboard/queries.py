@@ -13,7 +13,8 @@ import pandas as pd
 
 from dashboard import fmt
 from mcs.live.state import Command, period_totals, request_command
-from mcs.metrics import OPTION_LABELS, calmar_ratio
+from mcs.metrics import METRICS, OPTION_LABELS, VARIABLE_LABELS, calmar_ratio
+from mcs.sampling import CATEGORICALS, NUMERICS
 from mcs.storage.db import now_ms, transaction
 
 ROLE_LABELS = {
@@ -57,7 +58,8 @@ def engine_info(conn: sqlite3.Connection, now: int | None = None) -> EngineInfo:
     row = conn.execute("SELECT * FROM engine_state").fetchone()
     totals = period_totals(conn, now)
     counts = conn.execute(
-        "SELECT COUNT(*), SUM(mode = 'optimized' AND optimized_at IS NOT NULL) FROM simulations"
+        "SELECT COUNT(*), SUM(mode = 'optimized' AND optimized_at IS NOT NULL) FROM simulations "
+        "WHERE kind = 'plan'"
     ).fetchone()
     pending = conn.execute(
         "SELECT command FROM commands WHERE processed_at IS NULL ORDER BY id LIMIT 1"
@@ -116,14 +118,17 @@ def _option(draw: dict[str, Any], name: str) -> str:
     return "—" if value is None else OPTION_LABELS.get(str(value), str(value))
 
 
-def simulations_table(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Une ligne par simulation : configuration lisible et métriques (si le live a démarré)."""
+def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFrame:
+    """Une ligne par simulation du plan (ou des générations idéales, `kind="ideal"`) :
+    configuration lisible et métriques (si le live a démarré)."""
     rows = []
     for r in conn.execute(
-        """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, m.pnl_eur, m.pnl_pct,
-                  m.max_drawdown_pct, m.closed_trades, m.win_rate, m.total_fees, m.bh_gap_eur,
-                  m.open_positions
-           FROM simulations s LEFT JOIN metrics m ON m.sim_id = s.id ORDER BY s.id"""
+        """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, s.objective, s.generation,
+                  s.started_at, s.archived_at, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
+                  m.closed_trades, m.win_rate, m.total_fees, m.bh_gap_eur, m.open_positions
+           FROM simulations s LEFT JOIN metrics m ON m.sim_id = s.id
+           WHERE s.kind = ? ORDER BY s.id""",
+        (kind,),
     ):
         draw = json.loads(r["draw_json"])
         num = _numbers(r)
@@ -135,6 +140,10 @@ def simulations_table(conn: sqlite3.Connection) -> pd.DataFrame:
                 "Paire": f"P-{r['pair_id']:03d}",
                 "Calibrage": MODE_LABELS[r["mode"]],
                 "Famille": FAMILY_LABELS.get(r["family"], r["family"]),
+                "Objectif": METRICS.get(r["objective"] or "", "—"),
+                "generation": r["generation"],
+                "started_at": r["started_at"],
+                "archived_at": r["archived_at"],
                 "Filtre 1 j": _option(draw, "trend_enabled"),
                 "Type de filtre": _option(draw, "trend_type"),
                 "Stop": _option(draw, "stop_type"),
@@ -166,6 +175,70 @@ def simulations_table(conn: sqlite3.Connection) -> pd.DataFrame:
         for column in ("pnl_eur", "pnl_pct", "dd_pct", "calmar"):
             frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
     return frame
+
+
+def plan_window_pnl(conn: sqlite3.Connection, since: int) -> list[float]:
+    """P&L des simulations du plan depuis `since`, ramené à 1 000 € de départ (comparaison
+    avec les simulations idéales sur la même période)."""
+    bounds = conn.execute(
+        "SELECT MIN(ts), MAX(ts) FROM portfolio_values WHERE ts >= ?", (since,)
+    ).fetchone()
+    if bounds[0] is None or bounds[0] == bounds[1]:
+        return []
+    rows = conn.execute(
+        """SELECT a.total_value, b.total_value FROM simulations s
+           JOIN portfolio_values a ON a.sim_id = s.id AND a.ts = ?
+           JOIN portfolio_values b ON b.sim_id = s.id AND b.ts = ?
+           WHERE s.kind = 'plan'""",
+        bounds,
+    )
+    return [1000 * (float(end) / float(start) - 1) for start, end in rows if float(start) > 0]
+
+
+PERCENT_VARIABLES = {
+    "max_per_crypto",
+    "max_exposure",
+    "max_entry",
+    "circuit_breaker_drawdown",
+    "stop_pct",
+    "trailing_pct",
+    "trailing_activation_gain",
+    "tp_pct",
+    "risk_per_trade",
+}
+
+
+def ideal_parameters(conn: sqlite3.Connection, generation: int) -> pd.DataFrame:
+    """Paramètres tirés de chaque objectif d'une génération idéale (variables applicables)."""
+    draws = {
+        r["objective"]: json.loads(r["draw_json"])
+        for r in conn.execute(
+            "SELECT objective, draw_json FROM simulations WHERE kind = 'ideal' "
+            "AND generation = ? AND mode = 'typical' ORDER BY id",
+            (generation,),
+        )
+    }
+    names = [c.name for c in CATEGORICALS] + [n.name for n in NUMERICS]
+    rows = []
+    for name in names:
+        values = {obj: draw.get(name) for obj, draw in draws.items()}
+        if all(v is None for v in values.values()):
+            continue
+        row = {"Paramètre": VARIABLE_LABELS[name]}
+        for objective, value in values.items():
+            row[f"Idéale {METRICS[objective]}"] = _parameter(name, value)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _parameter(name: str, value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        return OPTION_LABELS.get(value, value)
+    if name in PERCENT_VARIABLES:
+        return fmt.pct(float(value) * 100)
+    return fmt.number(float(value), 0 if float(value).is_integer() else 2)
 
 
 def _numbers(row: sqlite3.Row) -> Any:
@@ -243,6 +316,7 @@ def indicator_params_table(conn: sqlite3.Connection) -> pd.DataFrame:
         """SELECT p.sim_id, s.mode, s.family, p.role, p.indicator, p.params_json,
                   p.typical_params_json, p.weight, p.score_threshold
            FROM indicator_params p JOIN simulations s ON s.id = p.sim_id
+           WHERE s.kind = 'plan'
            ORDER BY p.sim_id, CASE p.role WHEN 'main' THEN 0 WHEN 'confirmation' THEN 1 ELSE 2 END"""
     ):
         used, typical = json.loads(r["params_json"]), json.loads(r["typical_params_json"])

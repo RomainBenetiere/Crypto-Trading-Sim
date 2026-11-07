@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from dashboard import queries
+from mcs import ideal as ideals
 from mcs import production
 from mcs.broker.fees import FeeSchedule
 from mcs.config import JournalMode
@@ -294,3 +295,38 @@ async def test_app_live_section_lock_start_and_stops(app_db: Path) -> None:
     conn = connect(app_db, JournalMode.WAL)
     assert production.read_live(conn).emergency_requested_at is not None
     conn.close()
+
+
+async def test_app_ideal_section_and_production_choice(app_db: Path) -> None:
+    conn = connect(app_db, JournalMode.WAL)
+    prepare(conn)
+    engine = await run_live(conn, bars=2)
+    engine.ideal_launcher = lambda workers: None  # optimisation simulée ci-dessous
+    conn.execute("UPDATE metrics SET closed_trades = 12")
+    ideals.request_generation(conn, engine.clock())
+    await engine.process_commands()
+    conn.execute("UPDATE simulations SET optimized_at = 1 WHERE kind = 'ideal'")
+    await engine.process_commands()
+    assert ideals.read_ideal_state(conn).current == 1
+    clock = engine.clock
+    for _ in range(4):
+        clock.now += HOUR  # type: ignore[attr-defined]
+        await engine.on_tick(clock())
+    conn.execute("UPDATE metrics SET closed_trades = 12")
+    conn.close()
+
+    at = run_app()
+    assert any(s.value == "Simulations idéales" for s in at.subheader)
+    assert any("Génération 1 démarrée" in c.value for c in at.caption)
+    assert any("Sur la même période, les 300" in c.value for c in at.caption)
+    at.button(key="btn_ideal_create").click().run()
+    assert not at.exception
+    conn = connect(app_db, JournalMode.WAL)
+    assert ideals.read_ideal_state(conn).requested_at is not None
+    conn.close()
+    at.run()
+    assert any("en attente du moteur" in i.value for i in at.info)
+    shown = queries.simulations_table(connect(app_db, JournalMode.WAL))
+    assert len(shown) == 8  # tableaux et tornade : plan seulement
+    ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
+    assert "Idéale P&L" in ranks and "Idéale Ratio de Calmar" in ranks  # onglet Production

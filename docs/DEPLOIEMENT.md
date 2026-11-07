@@ -106,6 +106,10 @@ docker compose up -d --build
 
 Le schéma de la base est migré automatiquement au démarrage.
 
+## Simulations idéales
+
+Une fois les simulations à 10 trades clôturés en moyenne, l'onglet de suivi propose « Créer une nouvelle génération » (section « Simulations idéales ») : le moteur calcule les idéales P&L et Calmar, optimise leurs jumelles dans un processus séparé (quelques minutes, journal `logs/optimizer`), puis les démarre à 1 000 €. Les 300 continuent sans interruption. Analyse détaillée en ligne de commande : `docker compose exec engine python -m mcs.ideal`.
+
 ## 7. Mode production : ombre
 
 L'onglet « Production » du dashboard permet de choisir un scénario parmi les 5 meilleures simulations, puis de démarrer le mode ombre : le scénario tourne sur son propre portefeuille (300 € par défaut), ordres calculés au carnet réel mais **jamais envoyés**. L'ombre ne tourne que lorsque les simulations sont en marche.

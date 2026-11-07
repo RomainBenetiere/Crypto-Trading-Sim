@@ -35,6 +35,7 @@ from typing import Any
 
 import httpx
 
+import mcs.ideal as ideals
 from mcs import production
 from mcs.backtest import Dataset, load_dataset
 from mcs.bitvavo.account import BitvavoAccount
@@ -77,7 +78,7 @@ from mcs.sampling import load_simulations
 from mcs.storage.db import connect, now_ms, transaction
 from mcs.storage.markets import selected_markets
 from mcs.storage.positions import SqlitePositionStore
-from mcs.strategy.config import StopRecalc
+from mcs.strategy.config import StopRecalc, StrategyConfig
 from mcs.strategy.simulation import PendingEntry, Simulation
 
 log = logging.getLogger("mcs.engine")
@@ -110,6 +111,12 @@ def launch_optimizer(workers: int, recalibrate: bool) -> subprocess.Popen[bytes]
     return subprocess.Popen([*command, "--all"] if recalibrate else command)
 
 
+def launch_ideal_optimizer(workers: int) -> subprocess.Popen[bytes]:
+    """Optimisation des jumelles idéales en attente, dans un processus séparé."""
+    command = [sys.executable, "-m", "mcs.optimizer", "ideal", "--workers", str(workers)]
+    return subprocess.Popen(command)
+
+
 class Engine:
     def __init__(
         self,
@@ -122,6 +129,7 @@ class Engine:
         data_loader: Callable[[sqlite3.Connection, list[str]], Dataset] = load_dataset,
         optimizer_workers: int = 4,
         optimizer_launcher: Callable[[int, bool], Any] = launch_optimizer,
+        ideal_launcher: Callable[[int], Any] = launch_ideal_optimizer,
         trading: BitvavoTrading | None = None,
         max_capital: Decimal | None = None,
     ) -> None:
@@ -130,6 +138,11 @@ class Engine:
         self.clock, self.data_loader = clock, data_loader
         self.optimizer_workers, self.optimizer_launcher = optimizer_workers, optimizer_launcher
         self.optimizer_process: Any = None
+        self.ideal_launcher = ideal_launcher
+        self.ideal_process: Any = None
+        self.basket: list[str] = []
+        # Valeur du buy & hold au démarrage de chaque simulation idéale en cours.
+        self.ideal_bh: dict[int, Decimal | None] = {}
         self.positions = SqlitePositionStore(conn)
         self.sim_states = SimStateStore(conn)
         self.status = read_state(conn).status
@@ -192,32 +205,38 @@ class Engine:
                 basket,
                 self.max_capital,
             )
+        self.basket = basket
         self.sims = {}
         self.metrics = load_metrics(self.conn)
         for stored in load_simulations(self.conn):
-            self.broker.open_account(stored.id, INITIAL_CAPITAL)
-            sim = Simulation(
-                stored.id,
-                stored.config,
-                self.broker,
-                self.fees,
-                basket,
-                INITIAL_CAPITAL,
-                store=self.positions,
+            self._add_simulation(stored.id, stored.config)
+        self.ideal_bh = {
+            r["id"]: None if r["bh_start_value"] is None else Decimal(r["bh_start_value"])
+            for r in self.conn.execute(
+                "SELECT id, bh_start_value FROM simulations WHERE kind = 'ideal' "
+                "AND started_at IS NOT NULL AND archived_at IS NULL"
             )
-            sim.positions = self.positions.load(stored.id)
-            self.sim_states.restore(sim)
-            for order in self.broker.open_orders(stored.id):
-                if order.side is Side.BUY:
-                    sim.pending[order.market] = PendingEntry(
-                        order.id, order.market in sim.positions
-                    )
-            self.sims[stored.id] = sim
+        }
         log.info("%d simulations chargées sur %d paires.", len(self.sims), len(basket))
+
+    def _add_simulation(self, sim_id: int, config: StrategyConfig) -> None:
+        assert self.broker is not None
+        self.broker.open_account(sim_id, INITIAL_CAPITAL)
+        sim = Simulation(
+            sim_id, config, self.broker, self.fees, self.basket, INITIAL_CAPITAL,
+            store=self.positions,
+        )  # fmt: skip
+        sim.positions = self.positions.load(sim_id)
+        self.sim_states.restore(sim)
+        for order in self.broker.open_orders(sim_id):
+            if order.side is Side.BUY:
+                sim.pending[order.market] = PendingEntry(order.id, order.market in sim.positions)
+        self.sims[sim_id] = sim
 
     def _clear_runtime(self) -> None:
         self.broker, self.ctx, self.sims, self.metrics = None, None, {}, {}
         self.shadow = self.live = None
+        self.ideal_bh = {}
 
     # --- Commandes ------------------------------------------------------------------------
 
@@ -226,9 +245,77 @@ class Engine:
         et le choix du dashboard. Retourne True si une commande a été traitée."""
         async with self.lock:
             processed = await self._process_next_command()
+            await self.sync_ideals()
             await self.sync_shadow()
             await self.sync_live()
             return processed
+
+    # --- Simulations idéales (décision 46) -------------------------------------------------
+
+    async def sync_ideals(self) -> None:
+        """Crée la génération demandée, suit son optimisation, puis la démarre."""
+        now = self.clock()
+        state = ideals.read_ideal_state(self.conn)
+        if state.requested_at is not None and state.pending is None:
+            try:
+                if self.status is Status.NOT_STARTED:
+                    raise ideals.IdealError("les simulations ne tournent pas.")
+                generation = ideals.create_generation(self.conn, now)
+            except ideals.IdealError as exc:
+                ideals.finish_request(self.conn, f"Génération refusée : {exc}", now)
+                return
+            ideals.finish_request(
+                self.conn,
+                f"Génération {generation} : optimisation des indicateurs en cours.",
+                now,
+            )
+            log.info("Simulations idéales : génération %d créée.", generation)
+            state = ideals.read_ideal_state(self.conn)
+        if state.pending is None:
+            return
+        if self.status is Status.NOT_STARTED or self.broker is None:
+            return
+        if ideals.pending_ready(self.conn):
+            self.ideal_process = None
+            await self._start_ideals(state.pending, now)
+        elif self.ideal_process is None:
+            # Aussi après un redémarrage du moteur pendant l'optimisation.
+            self.ideal_process = self.ideal_launcher(self.optimizer_workers)
+        elif self.ideal_process.poll() is not None:
+            self.ideal_process = None
+            ideals.discard_pending(self.conn)
+            ideals.finish_request(
+                self.conn,
+                f"Génération {state.pending} abandonnée : échec de l'optimisation "
+                "(voir logs/optimizer).",
+                now,
+            )
+            log.error("Simulations idéales : optimisation de la génération en échec.")
+
+    async def _start_ideals(self, generation: int, now: int) -> None:
+        """Archive la génération en cours (ordres en attente annulés, positions et métriques
+        figées) et démarre la nouvelle, à 1 000 € chacune."""
+        assert self.broker is not None and self.ctx is not None
+        markets = list(self.ctx.data.markets)
+        prices = {m: p for m in markets if (p := self.ctx.last_price(m)) is not None}
+        bh_value = buy_and_hold_value(load_buy_and_hold(self.conn), prices, self.fees.taker)
+        archived, started = ideals.start_generation(self.conn, now, bh_value)
+        for sim_id in archived:
+            sim = self.sims.pop(sim_id, None)
+            if sim is None:
+                continue
+            for order in self.broker.open_orders(sim_id):
+                sim.on_order_closed(await self.broker.cancel_order(order.id, now))
+            self.sim_states.save([sim], now)
+            self.ideal_bh.pop(sim_id, None)
+        for stored in load_simulations(self.conn, f"id IN ({','.join(map(str, started))})"):
+            self._add_simulation(stored.id, stored.config)
+            self.ideal_bh[stored.id] = bh_value
+        self.sim_states.save([self.sims[i] for i in started], now)
+        ideals.finish_request(
+            self.conn, f"Génération {generation} démarrée ({len(started)} simulations).", now
+        )
+        log.info("Simulations idéales : génération %d démarrée.", generation)
 
     async def sync_shadow(self) -> None:
         if production.read_state(self.conn).reset_requested_at is not None:
@@ -332,7 +419,11 @@ class Engine:
         self._require(Status.HOLD, "Remettre à zéro")
         if production.read_live(self.conn).status is not production.LiveStatus.OFF:
             raise EngineError("arrêtez d'abord le mode réel (positions réelles en cours).")
+        if self.ideal_process is not None:
+            self.ideal_process.kill()
+            self.ideal_process = None
         with transaction(self.conn):
+            ideals.delete_all(self.conn)
             for table in RESET_TABLES:
                 self.conn.execute(f"DELETE FROM {table}")
         set_status(self.conn, Status.NOT_STARTED, now, started_at=None, basket_json=None)
@@ -526,13 +617,22 @@ class Engine:
         bh_value = buy_and_hold_value(load_buy_and_hold(self.conn), prices, self.fees.taker)
         bh_pnl = bh_value - INITIAL_CAPITAL if bh_value is not None else None
         for sim in self.sims.values():
+            reference = bh_pnl
+            if sim.sim_id in self.ideal_bh:
+                # Idéale : buy & hold sur sa propre période, depuis son démarrage.
+                start = self.ideal_bh[sim.sim_id]
+                reference = (
+                    INITIAL_CAPITAL * bh_value / start - INITIAL_CAPITAL
+                    if bh_value is not None and start
+                    else None
+                )
             self.metrics[sim.sim_id] = compute_metrics(
                 sim.sim_id,
                 sim.portfolio_value(self.ctx),
                 sim.trade_pnls,
                 self.broker.account(sim.sim_id).fees_paid,
                 len(sim.positions),
-                bh_pnl,
+                reference,
                 self.metrics.get(sim.sim_id),
             )
         write_metrics(self.conn, self.metrics.values(), now)

@@ -26,6 +26,7 @@ from mcs.config import load_settings
 from mcs.live.state import read_state
 from mcs.market_data import INTERVAL_MS, floor_ts
 from mcs.metrics import cash_balance
+from mcs.sampling import ACTIVE
 from mcs.storage.db import connect, now_ms
 
 HOUR = INTERVAL_MS["1h"]
@@ -221,7 +222,9 @@ def check_simulations(conn: sqlite3.Connection, now: int, since: int) -> list[Ch
     if state.status.value == "NOT_STARTED":
         return [Check("Simulations", "État", Level.OK, "non démarrées")]
     checks = []
-    sims = [r[0] for r in conn.execute("SELECT id FROM simulations")]
+    # Une simulation idéale n'écrit ses valeurs qu'à partir de son démarrage.
+    starts = [r[0] or 0 for r in conn.execute(f"SELECT started_at FROM simulations WHERE {ACTIVE}")]
+    sims = starts
     # Valeurs écrites quelques secondes après chaque heure pleine : marge de 5 min.
     hours = [h for h in _active_hours(conn, since, now) if h <= now - 5 * 60_000]
     written = dict(
@@ -229,7 +232,7 @@ def check_simulations(conn: sqlite3.Connection, now: int, since: int) -> list[Ch
             "SELECT ts, COUNT(*) FROM portfolio_values WHERE ts >= ? GROUP BY ts", (since,)
         ).fetchall()
     )
-    incomplete = [h for h in hours if written.get(h, 0) < len(sims)]
+    incomplete = [h for h in hours if written.get(h, 0) < sum(1 for t in starts if t < h)]
     checks.append(
         Check(
             "Simulations",

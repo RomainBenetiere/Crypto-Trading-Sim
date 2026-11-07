@@ -1,6 +1,7 @@
 """Optimisation 70/30 des simulations optimisées (SPEC §3, décisions 23 à 26).
 
     python -m mcs.optimizer run [--workers N] [--only SIM_ID ...] [--trials 40] [--force]
+    python -m mcs.optimizer ideal [--workers N]   # génération idéale en attente (moteur)
 
 Pour chaque simulation `optimized` : 40 jeux de valeurs d'indicateurs (valeurs typiques + 39
 tirés par hypercube latin dans les plages du §4) sont évalués par backtest sur les 70 % les
@@ -40,6 +41,7 @@ from mcs.indicators.signals import (
 )
 from mcs.logging_setup import configure_logging
 from mcs.sampling import (
+    PENDING_IDEAL,
     IndicatorValues,
     StoredSimulation,
     build_config,
@@ -255,7 +257,7 @@ def pending_simulations(
     conn: sqlite3.Connection, only: Sequence[int] | None = None
 ) -> list[StoredSimulation]:
     done = {r[0] for r in conn.execute("SELECT id FROM simulations WHERE optimized_at IS NOT NULL")}
-    sims = [s for s in load_simulations(conn) if s.mode == "optimized"]
+    sims = [s for s in load_simulations(conn) if s.mode == "optimized" and s.kind == "plan"]
     if only:
         return [s for s in sims if s.id in set(only)]
     return [s for s in sims if s.id not in done]
@@ -293,40 +295,68 @@ def run(
         )
     if recalibrate:
         # « Optimiser » après une optimisation terminée : toutes les jumelles sont recalibrées.
-        conn.execute("UPDATE simulations SET optimized_at = NULL WHERE mode = 'optimized'")
+        conn.execute(
+            "UPDATE simulations SET optimized_at = NULL WHERE mode = 'optimized' AND kind = 'plan'"
+        )
     sims = pending_simulations(conn, only)
     if not sims:
         raise OptimizationError("Aucune simulation optimisée à traiter (plan absent ou déjà fait).")
     data = data or load_dataset(conn)
     _set_status(conn, "RUNNING")
-    by_id = {s.id: s for s in sims}
-    results: list[OptimizationResult] = []
     try:
-        if workers <= 1:
-            cache: dict[tuple[Any, ...], Any] = {}
-            for sim in sims:
-                result = optimize(sim, data, fees, trials, cache)
-                save_result(conn, result, sim)
-                results.append(result)
-                _log_progress(result, len(results), len(sims))
-        else:
-            with ProcessPoolExecutor(
-                workers, initializer=_init_worker, initargs=(data, fees)
-            ) as pool:
-                futures = [pool.submit(_worker_optimize, sim, trials) for sim in sims]
-                for future in as_completed(futures):
-                    result = future.result()
-                    save_result(conn, result, by_id[result.sim_id])
-                    results.append(result)
-                    _log_progress(result, len(results), len(sims))
+        return _optimize_all(conn, sims, data, fees, workers, trials)
     finally:
         remaining = conn.execute(
-            "SELECT COUNT(*) FROM simulations WHERE mode = 'optimized' AND optimized_at IS NULL"
+            "SELECT COUNT(*) FROM simulations "
+            "WHERE mode = 'optimized' AND optimized_at IS NULL AND kind = 'plan'"
         ).fetchone()[0]
         if remaining == 0:
             _set_status(conn, "DONE", finished=True)
         else:
             _set_status(conn, "TODO")
+
+
+def run_ideal(
+    conn: sqlite3.Connection,
+    fees: FeeSchedule,
+    workers: int = 1,
+    trials: int = TRIALS,
+    data: Dataset | None = None,
+) -> list[OptimizationResult]:
+    """Jumelles optimisées de la génération idéale en attente (décision 46). Lancé par le
+    moteur en marche ou en Hold, sans toucher au statut d'optimisation du plan."""
+    where = f"{PENDING_IDEAL} AND mode = 'optimized' AND optimized_at IS NULL"
+    sims = load_simulations(conn, where)
+    if not sims:
+        raise OptimizationError("Aucune simulation idéale en attente d'optimisation.")
+    return _optimize_all(conn, sims, data or load_dataset(conn), fees, workers, trials)
+
+
+def _optimize_all(
+    conn: sqlite3.Connection,
+    sims: Sequence[StoredSimulation],
+    data: Dataset,
+    fees: FeeSchedule,
+    workers: int,
+    trials: int,
+) -> list[OptimizationResult]:
+    by_id = {s.id: s for s in sims}
+    results: list[OptimizationResult] = []
+    if workers <= 1:
+        cache: dict[tuple[Any, ...], Any] = {}
+        for sim in sims:
+            result = optimize(sim, data, fees, trials, cache)
+            save_result(conn, result, sim)
+            results.append(result)
+            _log_progress(result, len(results), len(sims))
+    else:
+        with ProcessPoolExecutor(workers, initializer=_init_worker, initargs=(data, fees)) as pool:
+            futures = [pool.submit(_worker_optimize, sim, trials) for sim in sims]
+            for future in as_completed(futures):
+                result = future.result()
+                save_result(conn, result, by_id[result.sim_id])
+                results.append(result)
+                _log_progress(result, len(results), len(sims))
     return results
 
 
@@ -348,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("command", choices=("run",))
+    parser.add_argument("command", choices=("run", "ideal"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--trials", type=int, default=TRIALS)
     parser.add_argument("--only", type=int, nargs="*", help="identifiants de simulations")
@@ -360,9 +390,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     conn = connect(settings.db_path, settings.journal_mode)
     fees = FeeSchedule(settings.fee_maker, settings.fee_taker)
     try:
-        results = run(
-            conn, fees, args.workers, args.trials, args.only, args.force, recalibrate=args.all
-        )
+        if args.command == "ideal":
+            results = run_ideal(conn, fees, args.workers, args.trials)
+        else:
+            results = run(
+                conn, fees, args.workers, args.trials, args.only, args.force, recalibrate=args.all
+            )
     except OptimizationError as exc:
         raise SystemExit(str(exc)) from None
     finally:

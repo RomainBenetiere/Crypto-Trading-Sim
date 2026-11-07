@@ -170,6 +170,14 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE metrics DROP COLUMN open_positions;
         ALTER TABLE engine_state DROP COLUMN master_seed;
         ALTER TABLE production_state DROP COLUMN shadow_reset_requested_at;
+        ALTER TABLE simulations DROP COLUMN kind;
+        ALTER TABLE simulations DROP COLUMN objective;
+        ALTER TABLE simulations DROP COLUMN generation;
+        ALTER TABLE simulations DROP COLUMN started_at;
+        ALTER TABLE simulations DROP COLUMN archived_at;
+        ALTER TABLE simulations DROP COLUMN bh_start_value;
+        ALTER TABLE engine_state DROP COLUMN ideal_requested_at;
+        ALTER TABLE engine_state DROP COLUMN ideal_message;
         PRAGMA user_version = 1;
         """
     )
@@ -181,5 +189,7 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
     assert "state_json" in position_columns
     production_columns = {r["name"] for r in conn.execute("PRAGMA table_info(production_state)")}
     assert "shadow_reset_requested_at" in production_columns
+    sim_columns = {r["name"] for r in conn.execute("PRAGMA table_info(simulations)")}
+    assert {"kind", "objective", "generation", "started_at", "archived_at"} <= sim_columns
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()

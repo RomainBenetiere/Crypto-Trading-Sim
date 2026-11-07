@@ -347,10 +347,12 @@ class SimRecord:
 
 
 def load_records(conn: sqlite3.Connection) -> list[SimRecord]:
+    """Simulations du plan (les idéales, démarrées plus tard, sont analysées à part)."""
     rows = conn.execute(
         """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, m.pnl_eur, m.pnl_pct,
                   m.max_drawdown_pct, m.closed_trades
-           FROM simulations s JOIN metrics m ON m.sim_id = s.id ORDER BY s.id"""
+           FROM simulations s JOIN metrics m ON m.sim_id = s.id
+           WHERE s.kind = 'plan' ORDER BY s.id"""
     )
     return [
         SimRecord(

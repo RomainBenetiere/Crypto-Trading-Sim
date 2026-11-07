@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -214,6 +214,18 @@ MIGRATIONS: dict[int, str] = {
     11: """
     -- Remise à zéro de l'ombre : demandée par le dashboard, appliquée par le moteur.
     ALTER TABLE production_state ADD COLUMN shadow_reset_requested_at INTEGER;
+    """,
+    12: """
+    -- Simulations idéales (décision 46) : déduites de la tornade, par générations.
+    ALTER TABLE simulations ADD COLUMN kind TEXT NOT NULL DEFAULT 'plan'
+        CHECK (kind IN ('plan', 'ideal'));
+    ALTER TABLE simulations ADD COLUMN objective TEXT CHECK (objective IN ('pnl', 'calmar'));
+    ALTER TABLE simulations ADD COLUMN generation INTEGER;
+    ALTER TABLE simulations ADD COLUMN started_at INTEGER;
+    ALTER TABLE simulations ADD COLUMN archived_at INTEGER;
+    ALTER TABLE simulations ADD COLUMN bh_start_value TEXT;
+    ALTER TABLE engine_state ADD COLUMN ideal_requested_at INTEGER;
+    ALTER TABLE engine_state ADD COLUMN ideal_message TEXT;
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

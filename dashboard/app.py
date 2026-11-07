@@ -24,6 +24,7 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
+import mcs.ideal as ideals  # noqa: E402
 from dashboard import chart_tab, fmt, queries  # noqa: E402
 from mcs import production  # noqa: E402
 from mcs.config import Settings, load_settings  # noqa: E402
@@ -31,6 +32,7 @@ from mcs.health import Level, run_checks  # noqa: E402
 from mcs.live.state import Command  # noqa: E402
 from mcs.metrics import (  # noqa: E402
     METRICS,
+    MIN_TRADES_FOR_TORNADO,
     buy_and_hold_detail,
     buy_and_hold_series,
     buy_and_hold_value,
@@ -85,7 +87,8 @@ def data_version() -> tuple[Any, ...]:
         ro()
         .execute(
             "SELECT (SELECT MAX(updated_at) FROM metrics), updated_at, "
-            "(SELECT COUNT(*) FROM simulations), (SELECT MAX(optimized_at) FROM simulations) "
+            "(SELECT COUNT(*) FROM simulations), (SELECT MAX(optimized_at) FROM simulations), "
+            "(SELECT MAX(started_at) FROM simulations) "
             "FROM engine_state"
         )
         .fetchone()
@@ -96,6 +99,11 @@ def data_version() -> tuple[Any, ...]:
 @st.cache_data(show_spinner=False)
 def simulations(version: tuple[Any, ...]) -> pd.DataFrame:
     return queries.simulations_table(ro())
+
+
+@st.cache_data(show_spinner=False)
+def ideal_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
+    return queries.simulations_table(ro(), kind="ideal")
 
 
 @st.cache_data(show_spinner=False)
@@ -505,6 +513,95 @@ def live_positions(
     )
 
 
+# --- Simulations idéales (décision 46) ------------------------------------------------------
+
+
+def ideal_section(version: tuple[Any, ...]) -> None:
+    st.subheader("Simulations idéales")
+    st.caption(
+        "Configurations déduites de la tornade : pour chaque variable, l'option ou le tiers de "
+        "valeurs au meilleur P&L moyen (idéale P&L) ou au meilleur ratio de Calmar moyen "
+        "(idéale Calmar), en jumelles typique / optimisée. Elles tournent à 1 000 € depuis "
+        "leur démarrage, hors tornade et hors classements, et se comparent aux 300 et au "
+        "buy & hold sur la même période. Effets mesurés une variable à la fois : une "
+        "hypothèse à valider."
+    )
+    conn = ro()
+    state = ideals.read_ideal_state(conn)
+    table = ideal_simulations(version)
+    if state.requested_at is not None:
+        st.info("Nouvelle génération demandée : en attente du moteur.")
+    elif state.pending is not None:
+        st.info(
+            f"Génération {state.pending} en préparation : optimisation des indicateurs des "
+            "jumelles optimisées (quelques minutes), puis démarrage des 4 simulations."
+        )
+    if state.message:
+        st.caption(f"Dernier événement : {state.message}")
+    current = (
+        table[(table["generation"] == state.current) & table["archived_at"].isna()]
+        if not table.empty
+        else table
+    )
+    if state.current is not None and not current.empty:
+        started = int(current["started_at"].iloc[0])
+        shown = metrics_columns(current)
+        shown.insert(1, "Objectif", current["Objectif"].to_numpy())
+        shown = shown.rename(columns={"vs buy & hold": "vs buy & hold (même période)"})
+        st.dataframe(shown, hide_index=True, width="stretch")
+        window = queries.plan_window_pnl(conn, started)
+        bh = current.dropna(subset=["pnl_eur", "bh_gap"])
+        parts = [f"Génération {state.current} démarrée le {fmt.timestamp(started)}."]
+        if window:
+            series = pd.Series(window)
+            parts.append(
+                f"Sur la même période, les 300 : médiane {fmt.signed_eur(series.median())}, "
+                f"meilleure {fmt.signed_eur(series.max())}, "
+                f"{int((series > 0).sum())} positives."
+            )
+        if not bh.empty:
+            row = bh.iloc[0]
+            parts.append(f"Buy & hold : {fmt.signed_eur(row['pnl_eur'] - row['bh_gap'])}.")
+        st.caption(" ".join(parts))
+        with st.expander(f"Paramètres de la génération {state.current}"):
+            st.dataframe(
+                queries.ideal_parameters(conn, state.current), hide_index=True, width="stretch"
+            )
+    elif state.pending is None and state.requested_at is None:
+        st.markdown("Aucune simulation idéale pour l'instant.")
+    archived = table[table["archived_at"].notna()] if not table.empty else table
+    if not archived.empty:
+        with st.expander("Générations précédentes (archivées)"):
+            shown = metrics_columns(archived)
+            shown.insert(1, "Génération", archived["generation"].to_numpy())
+            shown.insert(2, "Objectif", archived["Objectif"].to_numpy())
+            shown.insert(
+                3,
+                "Période",
+                [
+                    f"{fmt.timestamp(a, with_time=False)} → {fmt.timestamp(b, with_time=False)}"
+                    for a, b in zip(archived["started_at"], archived["archived_at"], strict=True)
+                ],
+            )
+            st.dataframe(shown, hide_index=True, width="stretch")
+            st.caption("Métriques figées à l'archivage (positions alors valorisées au marché).")
+    busy = state.requested_at is not None or state.pending is not None
+    running = queries.engine_info(conn).status != "NOT_STARTED"
+    with st.popover("Créer une nouvelle génération", disabled=busy or not running):
+        st.write(
+            "Les simulations idéales sont recalculées sur les métriques actuelles des 300, "
+            "optimisées puis démarrées à 1 000 €. La génération en cours est archivée : ses "
+            "ordres en attente sont annulés et ses résultats figés."
+        )
+        if st.button("Confirmer la nouvelle génération", key="btn_ideal_create"):
+            try:
+                ideals.request_generation(rw(), now_ms())
+            except ideals.IdealError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+
 def buy_and_hold_table() -> None:
     st.subheader("Buy & hold à poids égaux")
     conn = ro()
@@ -614,6 +711,7 @@ def tab_follow_up() -> None:
         else:
             tornado_chart(rows, ranked.pnl_mean, metric)
         top5(table, metric)
+        ideal_section(version)
         buy_and_hold_table()
     all_simulations(table)
 
@@ -781,7 +879,7 @@ def tab_production() -> None:
     if table.empty:
         st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
         return
-    st.markdown("#### Choisir parmi les 5 meilleures simulations")
+    st.markdown("#### Choisir parmi les 5 meilleures simulations (et les idéales)")
     metric = st.radio(
         "Classer par",
         list(METRICS),
@@ -790,7 +888,18 @@ def tab_production() -> None:
         key="prod_metric",
     )
     column = METRIC_COLUMNS[metric]
-    top = table.dropna(subset=[column]).nlargest(5, column).reset_index(drop=True)
+    top = table.dropna(subset=[column]).nlargest(5, column)
+    ranks = [str(i) for i in range(1, len(top) + 1)]
+    ideal = ideal_simulations(data_version())
+    if not ideal.empty:
+        eligible = ideal[
+            ideal["started_at"].notna()
+            & ideal["archived_at"].isna()
+            & (ideal["trades"] >= MIN_TRADES_FOR_TORNADO)
+        ].dropna(subset=[column])
+        top = pd.concat([top, eligible])
+        ranks += [f"Idéale {o}" for o in eligible["Objectif"]]
+    top = top.reset_index(drop=True)
     if top.empty:
         st.info(
             "Pas encore de classement : les métriques apparaissent après la première heure "
@@ -799,7 +908,7 @@ def tab_production() -> None:
         production_history()
         return
     shown = metrics_columns(top)
-    shown.insert(0, "Rang", range(1, len(top) + 1))
+    shown.insert(0, "Rang", ranks)
     event = st.dataframe(
         shown,
         hide_index=True,

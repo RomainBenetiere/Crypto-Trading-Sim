@@ -338,6 +338,13 @@ class StoredSimulation:
     seed: int
     config: StrategyConfig
     draw: Draw
+    kind: str = "plan"
+
+
+# Simulations que le moteur fait tourner : le plan et la génération idéale en cours.
+ACTIVE = "kind = 'plan' OR (started_at IS NOT NULL AND archived_at IS NULL)"
+# Génération idéale en attente de son optimisation.
+PENDING_IDEAL = "kind = 'ideal' AND started_at IS NULL AND archived_at IS NULL"
 
 
 def sim_ids(pair_id: int) -> tuple[int, int]:
@@ -451,7 +458,7 @@ def indicator_rows(
     return rows
 
 
-def load_simulations(conn: sqlite3.Connection) -> list[StoredSimulation]:
+def load_simulations(conn: sqlite3.Connection, where: str = ACTIVE) -> list[StoredSimulation]:
     return [
         StoredSimulation(
             id=row["id"],
@@ -461,8 +468,9 @@ def load_simulations(conn: sqlite3.Connection) -> list[StoredSimulation]:
             seed=row["seed"],
             config=config_from_json(row["config_json"]),
             draw=json.loads(row["draw_json"]),
+            kind=row["kind"],
         )
-        for row in conn.execute("SELECT * FROM simulations ORDER BY id")
+        for row in conn.execute(f"SELECT * FROM simulations WHERE {where} ORDER BY id")
     ]
 
 

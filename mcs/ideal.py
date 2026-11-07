@@ -7,8 +7,10 @@ variable existe (ex. type de trailing seulement si un trailing est tiré). Les v
 choisies dans l'ordre du catalogue, si bien qu'une variable conditionnelle n'est retenue que si
 sa condition est remplie par les choix déjà faits.
 
-Lecture seule de la base. Les effets sont marginaux (une variable à la fois, sans interaction) :
-c'est une hypothèse à valider, pas un optimum garanti.
+La commande est en lecture seule. Le moteur s'en sert aussi pour créer des générations de
+simulations idéales (décision 46) : jumelles typique / optimisée pour chaque objectif, qui
+tournent à côté des 300 depuis leur démarrage. Les effets sont marginaux (une variable à la
+fois, sans interaction) : c'est une hypothèse à valider, pas un optimum garanti.
 
 python -m mcs.ideal                   # P&L et ratio de Calmar
 python -m mcs.ideal --json ideal.json # tirages retenus, au format `draw_json`
@@ -19,22 +21,39 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import secrets
+import sqlite3
 import statistics
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from mcs.config import load_settings
 from mcs.metrics import (
     METRICS,
+    MIN_TRADES_FOR_TORNADO,
     OPTION_LABELS,
     VARIABLE_LABELS,
     SimRecord,
     load_records,
     records_for,
 )
-from mcs.sampling import CATEGORICALS, NUMERICS, Categorical, Draw, Numeric
-from mcs.storage.db import connect
+from mcs.sampling import (
+    CATEGORICALS,
+    NUMERICS,
+    PENDING_IDEAL,
+    Categorical,
+    Draw,
+    Numeric,
+    build_config,
+    indicator_rows,
+    sim_ids,
+    typical_indicators,
+)
+from mcs.storage.db import connect, transaction
+from mcs.strategy.serialize import config_to_json
 
 
 @dataclass(frozen=True)
@@ -128,6 +147,16 @@ def _calibration(records: Sequence[SimRecord]) -> Choice | None:
     return Choice("calibration", groups[-1].label, groups[-1], groups[0])
 
 
+def _fallback(var: Categorical | Numeric, records: Sequence[SimRecord]) -> object:
+    """Variable applicable mais trop peu tirée pour comparer : option la plus fréquente, ou
+    médiane des valeurs observées (milieu de la plage à défaut)."""
+    seen = [v for r in records if (v := r.draw.get(var.name)) is not None]
+    if isinstance(var, Categorical):
+        return Counter(map(str, seen)).most_common(1)[0][0] if seen else var.options[0]
+    middle = statistics.median(float(str(v)) for v in seen) if seen else (var.low + var.high) / 2
+    return round(middle) if var.integer else round(middle, var.decimals)
+
+
 def ideal(records: Sequence[SimRecord], metric: str, neighbours: int = 5) -> Ideal:
     chosen = records_for(records, metric)
     draw: Draw = {}
@@ -137,14 +166,14 @@ def ideal(records: Sequence[SimRecord], metric: str, neighbours: int = 5) -> Ide
             draw[cat.name] = None
             continue
         choice = _categorical(cat, chosen)
-        draw[cat.name] = choice.value
+        draw[cat.name] = choice.value if choice.value is not None else _fallback(cat, chosen)
         choices.append(choice)
     for var in NUMERICS:
         if not var.when.test(draw):
             draw[var.name] = None
             continue
         choice = _numeric(var, chosen)
-        draw[var.name] = choice.value
+        draw[var.name] = choice.value if choice.value is not None else _fallback(var, chosen)
         choices.append(choice)
     categorical = [c.name for c in CATEGORICALS]
     distance = [
@@ -152,6 +181,147 @@ def ideal(records: Sequence[SimRecord], metric: str, neighbours: int = 5) -> Ide
     ]
     closest = sorted(distance, key=lambda d: (d[1], -d[0].pnl))[:neighbours]
     return Ideal(metric, draw, choices, _calibration(chosen), closest)
+
+
+# --- Générations de simulations idéales (décision 46) ------------------------------------
+
+
+class IdealError(RuntimeError):
+    """Demande refusée (message en français, affiché dans le dashboard)."""
+
+
+@dataclass(frozen=True)
+class IdealState:
+    requested_at: int | None
+    message: str | None
+    pending: int | None  # génération en attente de son optimisation
+    current: int | None  # génération qui tourne
+
+
+def read_ideal_state(conn: sqlite3.Connection) -> IdealState:
+    row = conn.execute("SELECT ideal_requested_at, ideal_message FROM engine_state").fetchone()
+    pending = conn.execute(
+        f"SELECT MAX(generation) FROM simulations WHERE {PENDING_IDEAL}"
+    ).fetchone()[0]
+    current = conn.execute(
+        "SELECT MAX(generation) FROM simulations WHERE kind = 'ideal' "
+        "AND started_at IS NOT NULL AND archived_at IS NULL"
+    ).fetchone()[0]
+    return IdealState(row["ideal_requested_at"], row["ideal_message"], pending, current)
+
+
+def request_generation(conn: sqlite3.Connection, now: int) -> None:
+    """Écrit par le dashboard ; le moteur crée la génération dans les 2 s."""
+    status = conn.execute("SELECT status FROM engine_state").fetchone()[0]
+    if status == "NOT_STARTED":
+        raise IdealError("Lancez d'abord les simulations.")
+    state = read_ideal_state(conn)
+    if state.requested_at is not None or state.pending is not None:
+        raise IdealError("Une génération est déjà en préparation.")
+    conn.execute("UPDATE engine_state SET ideal_requested_at = ?, updated_at = ?", (now, now))
+
+
+def finish_request(conn: sqlite3.Connection, message: str, now: int) -> None:
+    conn.execute(
+        """UPDATE engine_state SET ideal_requested_at = NULL, ideal_message = ?, updated_at = ?""",
+        (message, now),
+    )
+
+
+def create_generation(conn: sqlite3.Connection, now: int) -> int:
+    """Calcule les simulations idéales P&L et Calmar sur les métriques du plan et les enregistre
+    en jumelles typique / optimisée, en attente (`started_at` NULL) de l'optimisation."""
+    records = load_records(conn)
+    if not records or statistics.fmean(r.trades for r in records) < MIN_TRADES_FOR_TORNADO:
+        raise IdealError(
+            f"il faut en moyenne {MIN_TRADES_FOR_TORNADO} trades clôturés par simulation."
+        )
+    if sum(1 for r in records if r.calmar is not None) < 2 * 3:
+        raise IdealError("trop peu de simulations ont un ratio de Calmar.")
+    generation = (
+        int(conn.execute("SELECT COALESCE(MAX(generation), 0) FROM simulations").fetchone()[0]) + 1
+    )
+    pair = conn.execute("SELECT MAX(pair_id) FROM simulations").fetchone()[0]
+    rows, params = [], []
+    for objective in METRICS:
+        draw = ideal(records, objective, neighbours=0).draw
+        config = build_config(draw)
+        typical = typical_indicators(draw)
+        pair += 1
+        for sim_id, mode in zip(sim_ids(pair), ("typical", "optimized"), strict=True):
+            rows.append(
+                (
+                    sim_id,
+                    pair,
+                    mode,
+                    draw["family"],
+                    config_to_json(config),
+                    json.dumps(draw, sort_keys=True),
+                    secrets.randbits(31),
+                    now,
+                    objective,
+                    generation,
+                )
+            )
+            params.extend(indicator_rows(sim_id, config, typical))
+    with transaction(conn):
+        conn.executemany(
+            """INSERT INTO simulations (id, pair_id, mode, family, config_json, draw_json, seed,
+                   created_at, kind, objective, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ideal', ?, ?)""",
+            rows,
+        )
+        conn.executemany(
+            """INSERT INTO indicator_params (sim_id, role, indicator, params_json,
+                   typical_params_json, weight, score_threshold) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
+    return generation
+
+
+def pending_ready(conn: sqlite3.Connection) -> bool:
+    """Toutes les jumelles optimisées de la génération en attente sont optimisées."""
+    return not conn.execute(
+        f"SELECT COUNT(*) FROM simulations WHERE {PENDING_IDEAL} "
+        "AND mode = 'optimized' AND optimized_at IS NULL"
+    ).fetchone()[0]
+
+
+def discard_pending(conn: sqlite3.Connection) -> None:
+    conn.execute(f"DELETE FROM simulations WHERE {PENDING_IDEAL}")
+
+
+def start_generation(
+    conn: sqlite3.Connection, now: int, bh_value: Decimal | None
+) -> tuple[list[int], list[int]]:
+    """Archive la génération en cours et démarre celle en attente.
+    Retourne (simulations archivées, simulations démarrées)."""
+    archived = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM simulations WHERE kind = 'ideal' "
+            "AND started_at IS NOT NULL AND archived_at IS NULL"
+        )
+    ]
+    started = [r[0] for r in conn.execute(f"SELECT id FROM simulations WHERE {PENDING_IDEAL}")]
+    with transaction(conn):
+        conn.execute(
+            "UPDATE simulations SET archived_at = ? WHERE kind = 'ideal' "
+            "AND started_at IS NOT NULL AND archived_at IS NULL",
+            (now,),
+        )
+        conn.execute(
+            f"UPDATE simulations SET started_at = ?, bh_start_value = ? WHERE {PENDING_IDEAL}",
+            (now, bh_value),
+        )
+    return archived, started
+
+
+def delete_all(conn: sqlite3.Connection) -> None:
+    """Remise à zéro des simulations : les idéales disparaissent avec les données dont elles
+    sont tirées (ordres, positions et valeurs supprimés en cascade)."""
+    conn.execute("DELETE FROM simulations WHERE kind = 'ideal'")
+    conn.execute("UPDATE engine_state SET ideal_requested_at = NULL, ideal_message = NULL")
 
 
 # --- Rapport --------------------------------------------------------------------------------
