@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from dashboard import charts, fmt
+from dashboard import charts, fmt, queries
 from mcs.storage.db import now_ms
 
 GREEN, RED, GREY, BLUE, ORANGE = "#26a269", "#c0392b", "#9ca3af", "#2f6fd6", "#e07a1f"
@@ -144,21 +144,26 @@ def detail(conn: Any, markets: list[str], version: tuple[Any, ...]) -> None:
         format_func=lambda d: f"{d} j",
         key=f"chart_days_{interval}",
     )
-    sims = [None, *range(1, 301)]
+    ideal = queries.ideal_ids(conn, running_only=True)
+    sims = [None, *range(1, 301), *ideal]
     sim_id = cols[3].selectbox(
         "Réglages",
         sims,
         key="chart_sim",
-        format_func=lambda s: "Valeurs typiques" if s is None else f"Simulation {fmt.sim_label(s)}",
+        format_func=lambda s: (
+            "Valeurs typiques" if s is None else f"Simulation {fmt.sim_label(s, s in ideal)}"
+        ),
     )
     settings = charts.ChartIndicators()
     if sim_id is not None:
         config = charts.simulation_config(conn, sim_id)
         if config is None:
-            st.warning(f"{fmt.sim_label(sim_id)} n'existe pas dans le plan.")
+            st.warning(f"{fmt.sim_label(sim_id, sim_id in ideal)} n'existe pas dans le plan.")
             sim_id = None
         else:
-            settings = charts.indicators_for(config, f"réglages de {fmt.sim_label(sim_id)}")
+            settings = charts.indicators_for(
+                config, f"réglages de {fmt.sim_label(sim_id, sim_id in ideal)}"
+            )
     toggles = st.columns(5)
     show = {
         "ema": toggles[0].toggle("EMA", value=True, key="ov_ema"),

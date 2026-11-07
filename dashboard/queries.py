@@ -136,7 +136,7 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
         rows.append(
             {
                 "sim_id": r["id"],
-                "Simulation": fmt.sim_label(r["id"]),
+                "Simulation": fmt.sim_label(r["id"], ideal=kind == "ideal"),
                 "Paire": f"P-{r['pair_id']:03d}",
                 "Calibrage": MODE_LABELS[r["mode"]],
                 "Famille": FAMILY_LABELS.get(r["family"], r["family"]),
@@ -175,6 +175,42 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
         for column in ("pnl_eur", "pnl_pct", "dd_pct", "calmar"):
             frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
     return frame
+
+
+def ideal_ids(conn: sqlite3.Connection, running_only: bool = False) -> list[int]:
+    """Simulations idéales (toutes, ou seulement la génération qui tourne)."""
+    where = "kind = 'ideal'"
+    if running_only:
+        where += " AND started_at IS NOT NULL AND archived_at IS NULL"
+    return [r[0] for r in conn.execute(f"SELECT id FROM simulations WHERE {where} ORDER BY id")]
+
+
+def label(conn: sqlite3.Connection, sim_id: int) -> str:
+    return fmt.sim_label(sim_id, ideal=sim_id in ideal_ids(conn))
+
+
+def ideal_bh_start(conn: sqlite3.Connection, sim_id: int) -> Decimal | None:
+    """Valeur du buy & hold au démarrage d'une simulation idéale."""
+    row = conn.execute("SELECT bh_start_value FROM simulations WHERE id = ?", (sim_id,)).fetchone()
+    return None if row is None or row[0] is None else Decimal(row[0])
+
+
+def window_values(conn: sqlite3.Connection, since: int) -> pd.DataFrame:
+    """Valeur horaire de chaque simulation du plan depuis `since`, ramenée à 1 000 € à la
+    première heure (comparaison avec les simulations idéales sur la même période)."""
+    frame = pd.read_sql_query(
+        """SELECT v.sim_id, v.ts, v.total_value FROM portfolio_values v
+           JOIN simulations s ON s.id = v.sim_id
+           WHERE s.kind = 'plan' AND v.ts >= ? ORDER BY v.ts""",
+        conn,
+        params=(since,),
+    )
+    if frame.empty:
+        return pd.DataFrame(columns=["sim_id", "ts", "value"])
+    values = frame.pop("total_value").astype(float)
+    first = values.groupby(frame["sim_id"]).transform("first")
+    frame["value"] = 1000 * values / first
+    return frame[first > 0]
 
 
 def plan_window_pnl(conn: sqlite3.Connection, since: int) -> list[float]:

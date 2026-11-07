@@ -319,6 +319,11 @@ async def test_app_ideal_section_and_production_choice(app_db: Path) -> None:
     assert any(s.value == "Simulations idéales" for s in at.subheader)
     assert any("Génération 1 démarrée" in c.value for c in at.caption)
     assert any("Sur la même période, les 300" in c.value for c in at.caption)
+    assert any("Comparaison sur la même période" in m.value for m in at.markdown)
+    labels = [v for df in at.dataframe for v in df.value.get("Simulation", [])]
+    assert "SO-009" in labels and "S-009" not in labels  # idéales : indicatif SO
+    curves = [v for df in at.dataframe for v in df.value.get("Courbe", [])]
+    assert "Médiane des 300" in curves and any("top 5" in c for c in curves)
     at.button(key="btn_ideal_create").click().run()
     assert not at.exception
     conn = connect(app_db, JournalMode.WAL)

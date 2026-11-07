@@ -516,7 +516,7 @@ def live_positions(
 # --- Simulations idéales (décision 46) ------------------------------------------------------
 
 
-def ideal_section(version: tuple[Any, ...]) -> None:
+def ideal_section(version: tuple[Any, ...], plan: pd.DataFrame, metric: str) -> None:
     st.subheader("Simulations idéales")
     st.caption(
         "Configurations déduites de la tornade : pour chaque variable, l'option ou le tiers de "
@@ -563,6 +563,7 @@ def ideal_section(version: tuple[Any, ...]) -> None:
             row = bh.iloc[0]
             parts.append(f"Buy & hold : {fmt.signed_eur(row['pnl_eur'] - row['bh_gap'])}.")
         st.caption(" ".join(parts))
+        ideal_comparison(current, plan, metric, started)
         with st.expander(f"Paramètres de la génération {state.current}"):
             st.dataframe(
                 queries.ideal_parameters(conn, state.current), hide_index=True, width="stretch"
@@ -600,6 +601,70 @@ def ideal_section(version: tuple[Any, ...]) -> None:
                 st.error(str(exc))
             else:
                 st.rerun()
+
+
+COMPARISONS = ("Top 5 des 300", "Médiane des 300", "Buy & hold")
+IDEAL_COLORS = ["#2f6fd6", "#8fb3ee", "#c2417a", "#e7a3c0"]
+
+
+def ideal_comparison(current: pd.DataFrame, plan: pd.DataFrame, metric: str, started: int) -> None:
+    """Valeur depuis le démarrage des idéales, face au top 5 actuel des 300 (classement
+    choisi en haut de page), à leur médiane et au buy & hold, tous ramenés à 1 000 €."""
+    st.markdown("##### Comparaison sur la même période")
+    chosen = st.multiselect(
+        "Comparer à", COMPARISONS, default=list(COMPARISONS), key="ideal_compare"
+    )
+    conn = ro()
+    fig = go.Figure()
+    rows: list[dict[str, Any]] = []
+
+    def add(name: str, xs: list[int], ys: list[float], line: dict[str, Any]) -> None:
+        fig.add_scatter(x=[paris(t) for t in xs], y=ys, mode="lines", name=name, line=line)
+        if ys:
+            rows.append({"Courbe": name, "P&L sur la période": fmt.signed_eur(ys[-1] - 1000)})
+
+    ideal_values = queries.value_series(conn, current["sim_id"].tolist())
+    for color, (_, sim) in zip(IDEAL_COLORS, current.iterrows(), strict=False):
+        points = ideal_values[ideal_values["sim_id"] == sim["sim_id"]]
+        label = f"{sim['Simulation']} · {sim['Objectif']} · {sim['Calibrage']}"
+        add(label, points["ts"].tolist(), points["value"].tolist(),
+            {"color": color, "width": 3})  # fmt: skip
+    window = queries.window_values(conn, started)
+    if "Top 5 des 300" in chosen and not window.empty:
+        column = METRIC_COLUMNS[metric]
+        top = plan.dropna(subset=[column]).nlargest(5, column)
+        for color, (_, sim) in zip(TOP_COLORS, top.iterrows(), strict=False):
+            points = window[window["sim_id"] == sim["sim_id"]]
+            add(f"{sim['Simulation']} (top 5 {METRICS[metric]})", points["ts"].tolist(),
+                points["value"].tolist(), {"color": color, "width": 1, "dash": "dot"})  # fmt: skip
+    if "Médiane des 300" in chosen and not window.empty:
+        median = window.groupby("ts")["value"].median()
+        add("Médiane des 300", median.index.tolist(), median.tolist(),
+            {"color": MUTED, "width": 2})  # fmt: skip
+    start_value = queries.ideal_bh_start(conn, int(current["sim_id"].iloc[0]))
+    lines = load_buy_and_hold(conn)
+    if "Buy & hold" in chosen and lines and start_value:
+        bh = buy_and_hold_series(conn, lines, settings().fee_taker, started, now_ms())
+        add("Buy & hold", [t for t, _ in bh],
+            [float(1000 * v / start_value) for _, v in bh],
+            {"color": BH_COLOR, "dash": "dash"})  # fmt: skip
+    fig.update_layout(
+        separators=", ",
+        height=360,
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        yaxis_title="€ (base 1 000 au démarrage)",
+        legend={"orientation": "h", "y": -0.15},
+        hovermode="x unified",
+    )
+    fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
+    st.plotly_chart(fig, width="stretch")
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption(
+        "Top 5 : les 5 meilleures des 300 au classement actuel (sélection en haut de page), "
+        "valeur ramenée à 1 000 € à la première heure après le démarrage des idéales. Un top 5 "
+        "choisi sur la même période serait biaisé en sa faveur : il est connu après coup."
+    )
 
 
 def buy_and_hold_table() -> None:
@@ -711,7 +776,7 @@ def tab_follow_up() -> None:
         else:
             tornado_chart(rows, ranked.pnl_mean, metric)
         top5(table, metric)
-        ideal_section(version)
+        ideal_section(version, table, metric)
         buy_and_hold_table()
     all_simulations(table)
 
@@ -945,7 +1010,10 @@ def tab_production() -> None:
             "paramètres du nouveau scénario."
         )
     if st.button(
-        f"Choisir {fmt.sim_label(sim_id)}", key="btn_prod_choose", type="primary", disabled=same
+        f"Choisir {queries.label(ro(), sim_id)}",
+        key="btn_prod_choose",
+        type="primary",
+        disabled=same,
     ):
         production.choose(rw(), sim_id, amount, metric, now_ms())
         st.rerun()
@@ -955,7 +1023,7 @@ def tab_production() -> None:
 def production_summary(choice: production.Choice) -> None:
     draw = json.loads(choice.draw_json)
     cols = st.columns(4)
-    cols[0].metric("Scénario retenu", fmt.sim_label(choice.sim_id))
+    cols[0].metric("Scénario retenu", queries.label(ro(), choice.sim_id))
     cols[1].metric("Capital engagé", fmt.eur(float(choice.capital)))
     cols[2].metric("Échelle", fmt.number(float(choice.scale), 3))
     cols[3].metric("Choisi le", fmt.timestamp(choice.chosen_at))
@@ -1212,7 +1280,7 @@ def production_history() -> None:
     st.dataframe(
         pd.DataFrame(
             {
-                "Scénario": [fmt.sim_label(c.sim_id) for c in choices],
+                "Scénario": [queries.label(ro(), c.sim_id) for c in choices],
                 "Classement": [METRICS[c.metric] for c in choices],
                 "Capital": [fmt.eur(float(c.capital)) for c in choices],
                 "Choisi le": [fmt.timestamp(c.chosen_at) for c in choices],

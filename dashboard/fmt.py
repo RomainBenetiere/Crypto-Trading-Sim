@@ -108,5 +108,6 @@ def duration_days(ms: int) -> str:
     return f"{number(days, 1)} j" if days < 10 else f"{number(days, 0)} j"
 
 
-def sim_label(sim_id: int) -> str:
-    return f"S-{sim_id:03d}"
+def sim_label(sim_id: int, ideal: bool = False) -> str:
+    """« S-042 » pour une simulation du plan, « SO-301 » pour une simulation idéale."""
+    return f"{'SO' if ideal else 'S'}-{sim_id:03d}"
