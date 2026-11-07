@@ -68,6 +68,14 @@ class StopRecalc(StrEnum):
     HOURLY = "hourly"
 
 
+class StopConfirm(StrEnum):
+    """Déclenchement du stop initial (décision 47)."""
+
+    INTRABAR = "intrabar"  # au premier passage du cours sous le niveau (bougies 1 min)
+    CLOSE_4H = "close_4h"  # seulement si une bougie 4 h clôture sous le niveau
+    GRACE = "grace"  # clôture 4 h pendant les `grace_bars` premières bougies, puis intrabar
+
+
 class EntryOrder(StrEnum):
     LIMIT = "limit"
     MARKET = "market"
@@ -138,6 +146,13 @@ class ExitConfig:
     reverse_signal: bool = True
     recalc: StopRecalc = StopRecalc.CLOSE_4H
     max_holding_bars: int | None = None  # bougies 4 h
+    # Sorties de la décision 47 (désactivées par défaut : plan des 300 inchangé).
+    stop_confirm: StopConfirm = StopConfirm.INTRABAR
+    grace_bars: int = 3  # bougies 4 h de grâce (StopConfirm.GRACE)
+    # Stop d'urgence intrabar quand le stop attend la clôture : entrée − multiple × R.
+    hard_stop_multiple: Decimal = Decimal(2)
+    breakeven_r: Decimal | None = None  # stop au prix d'entrée dès un gain de X R
+    time_stop_bars: int | None = None  # sortie si pas en gain après N bougies 4 h
 
 
 @dataclass(frozen=True, slots=True)

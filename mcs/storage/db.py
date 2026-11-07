@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -226,6 +226,10 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE simulations ADD COLUMN bh_start_value TEXT;
     ALTER TABLE engine_state ADD COLUMN ideal_requested_at INTEGER;
     ALTER TABLE engine_state ADD COLUMN ideal_message TEXT;
+    """,
+    13: """
+    -- SO d'hypothèses (décision 47) : configurations issues de l'analyse statistique.
+    ALTER TABLE simulations ADD COLUMN hypothesis TEXT;
     """,
 }
 BUSY_TIMEOUT_MS = 30_000

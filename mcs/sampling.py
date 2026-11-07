@@ -56,6 +56,7 @@ from mcs.strategy.config import (
     SignalConfig,
     Sizing,
     StopConfig,
+    StopConfirm,
     StopRecalc,
     StopType,
     StrategyConfig,
@@ -303,6 +304,14 @@ def build_config(draw: Draw, indicators: IndicatorValues | None = None) -> Strat
             reverse_signal=draw["reverse_signal"] == "yes",
             recalc=StopRecalc(draw["stop_recalc"]),
             max_holding_bars=draw["max_holding_bars"],
+            # Sorties de la décision 47 : hors du tirage du plan, fixées par les SO.
+            stop_confirm=StopConfirm(draw.get("stop_confirm", "intrabar")),
+            grace_bars=int(draw.get("grace_bars", 3)),
+            hard_stop_multiple=_dec(draw.get("hard_stop_multiple"), "2"),
+            breakeven_r=(
+                None if draw.get("breakeven_r") is None else _dec(draw["breakeven_r"], "1")
+            ),
+            time_stop_bars=draw.get("time_stop_bars"),
         ),
         execution=ExecutionConfig(
             entry_order=EntryOrder(draw["entry_order"]),

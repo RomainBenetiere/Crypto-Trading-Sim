@@ -144,6 +144,30 @@ async def test_engine_generations_lifecycle(setup, data) -> None:  # type: ignor
     restarted = make_engine()
     assert set(restarted.sims) == set(range(1, 9)) | {13, 14, 15, 16}
 
+    # SO d'hypothèses : 3 bases × (sortie actuelle, clôture 4 h), optimisées seulement.
+    restarted.ideal_launcher = launcher
+    with pytest.raises(ideals.IdealError):
+        ideals.create_hypotheses(conn, ["inconnue"], clock())
+    hypotheses = ideals.create_hypotheses(conn, ["clôture 4 h"], clock())
+    assert len(hypotheses) == 6 and all(i % 2 == 0 for i in hypotheses)
+    await restarted.process_commands()
+    assert ideals.read_ideal_state(conn).pending_hypotheses
+    await optimize_pending(conn, data)
+    await restarted.process_commands()
+    state = ideals.read_ideal_state(conn)
+    assert not state.busy and state.current == 2  # la génération 2 n'est pas archivée
+    assert set(hypotheses) <= set(restarted.sims)
+    closing = restarted.sims[hypotheses[1]].config.exits
+    assert closing.stop_confirm.value == "close_4h"
+
+    conn.execute("UPDATE metrics SET closed_trades = 12")
+    ideals.request_generation(conn, clock())
+    await restarted.process_commands()
+    await optimize_pending(conn, data)
+    await restarted.process_commands()
+    assert ideals.read_ideal_state(conn).current == 3
+    assert set(hypotheses) <= set(restarted.sims)  # la tornade n'archive pas les hypothèses
+
     restarted.ideal_launcher = lambda workers: FakeProcess(code=1)
     ideals.request_generation(conn, clock())
     await restarted.process_commands()  # création + lancement

@@ -34,6 +34,7 @@ from mcs.strategy.config import (
     CIRCUIT_BREAKER_PAUSE_BARS,
     MIN_DAILY_HISTORY,
     EntryOrder,
+    StopConfirm,
     StopRecalc,
     StrategyConfig,
     TakeProfitType,
@@ -150,12 +151,31 @@ class Simulation:
             self._save(position, now)
 
     async def on_price(self, market: str, low: Decimal, now: int) -> bool:
-        """Déclenche le stop si `low` l'atteint. Retourne True si une sortie a eu lieu."""
+        """Déclenche le stop si `low` l'atteint. Retourne True si une sortie a eu lieu.
+        Stop confirmé à la clôture 4 h : seul le stop d'urgence se déclenche ici."""
         position = self.positions.get(market)
-        if position is None or low > position.stop:
+        if position is None:
+            return False
+        level = position.stop
+        if self._stop_on_close(position, position.bars_held + 1):
+            level = self._hard_stop(position)
+        if low > level:
             return False
         reason = Reason.TRAILING if position.stop_from_trailing else Reason.STOP
-        return await self.exit(market, reason, now, trigger_price=position.stop, price=low)
+        return await self.exit(market, reason, now, trigger_price=level, price=low)
+
+    def _stop_on_close(self, position: Position, bar: int) -> bool:
+        """Le stop initial attend-il la clôture de la `bar`-ième bougie 4 h de la position ?
+        Seulement tant qu'il n'a été remonté ni par le trailing ni par le seuil de rentabilité."""
+        exits = self.config.exits
+        if exits.stop_confirm is StopConfirm.INTRABAR or position.stop > position.initial_stop:
+            return False
+        return exits.stop_confirm is StopConfirm.CLOSE_4H or bar <= exits.grace_bars
+
+    def _hard_stop(self, position: Position) -> Decimal:
+        return position.avg_entry_price - (
+            self.config.exits.hard_stop_multiple * position.risk_per_unit
+        )
 
     async def on_order_filled(self, order: Order, ctx: MarketContext, now: int) -> None:
         if order.side is Side.BUY:
@@ -213,6 +233,14 @@ class Simulation:
     # --- Sorties ---------------------------------------------------------------------------
 
     def _exit_reason(self, market: str, position: Position, ctx: MarketContext) -> Reason | None:
+        exits = self.config.exits
+        close = ctx.last_price(market)
+        if (
+            close is not None
+            and self._stop_on_close(position, position.bars_held)
+            and close <= position.stop
+        ):
+            return Reason.STOP  # stop confirmé : clôture 4 h sous le niveau
         trend = self.config.trend
         if (
             trend.enabled
@@ -224,8 +252,16 @@ class Simulation:
             market, self.config.signals.main, "sell_state"
         ):
             return Reason.REVERSE_SIGNAL
-        max_bars = self.config.exits.max_holding_bars
+        max_bars = exits.max_holding_bars
         if max_bars is not None and position.bars_held >= max_bars:
+            return Reason.MAX_DURATION
+        if (
+            exits.time_stop_bars is not None
+            and position.bars_held >= exits.time_stop_bars
+            and close is not None
+            and close <= position.avg_entry_price
+        ):
+            # Sortie temporelle : enregistrée avec le motif « durée » (contrainte de la base).
             return Reason.MAX_DURATION
         return None
 
@@ -271,6 +307,13 @@ class Simulation:
         log.info("Sim %d : position %s clôturée (%s).", self.sim_id, market, reason)
 
     def _update_trailing(self, position: Position, ctx: MarketContext, market: str) -> None:
+        breakeven = self.config.exits.breakeven_r
+        if (
+            breakeven is not None
+            and position.highest_high
+            >= position.avg_entry_price + breakeven * position.risk_per_unit
+        ):
+            position.raise_stop(position.avg_entry_price)
         if self.config.trailing.type is TrailingType.NONE:
             return
         level = trailing_level(self.config, position, ctx, market)

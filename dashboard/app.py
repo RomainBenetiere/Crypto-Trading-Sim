@@ -536,8 +536,15 @@ def ideal_section(version: tuple[Any, ...], plan: pd.DataFrame, metric: str) -> 
             f"Génération {state.pending} en préparation : optimisation des indicateurs des "
             "jumelles optimisées (quelques minutes), puis démarrage des 4 simulations."
         )
+    if state.pending_hypotheses:
+        st.info(
+            "SO d'hypothèses en préparation : optimisation des indicateurs (quelques minutes), "
+            "puis démarrage."
+        )
     if state.message:
         st.caption(f"Dernier événement : {state.message}")
+    hypotheses = table[table["hypothesis"].notna()] if not table.empty else table
+    table = table[table["hypothesis"].isna()] if not table.empty else table
     current = (
         table[(table["generation"] == state.current) & table["archived_at"].isna()]
         if not table.empty
@@ -586,7 +593,8 @@ def ideal_section(version: tuple[Any, ...], plan: pd.DataFrame, metric: str) -> 
             )
             st.dataframe(shown, hide_index=True, width="stretch")
             st.caption("Métriques figées à l'archivage (positions alors valorisées au marché).")
-    busy = state.requested_at is not None or state.pending is not None
+    hypotheses_section(hypotheses, plan, metric)
+    busy = state.requested_at is not None or state.busy
     running = queries.engine_info(conn).status != "NOT_STARTED"
     with st.popover("Créer une nouvelle génération", disabled=busy or not running):
         st.write(
@@ -603,17 +611,48 @@ def ideal_section(version: tuple[Any, ...], plan: pd.DataFrame, metric: str) -> 
                 st.rerun()
 
 
+def hypotheses_section(table: pd.DataFrame, plan: pd.DataFrame, metric: str) -> None:
+    """SO d'hypothèses (décision 47) : bases issues de l'analyse statistique, chacune avec la
+    sortie actuelle (témoin) et les nouvelles sorties."""
+    if table.empty:
+        return
+    running = table[table["started_at"].notna() & table["archived_at"].isna()]
+    if running.empty:
+        return
+    st.markdown("#### SO d'hypothèses (analyse statistique)")
+    st.caption(
+        "Trois bases (Supertrend à stop serré, drawdown minimal, croisement d'EMA à stop "
+        "large), calibrage optimisé, chacune avec la sortie actuelle et une sortie qui vise "
+        "les stops déclenchés trop tôt (stop confirmé à la clôture 4 h, avec un stop "
+        "d'urgence intrabar à 2 R). Comparer chaque SO à son témoin « sortie actuelle »."
+    )
+    shown = metrics_columns(running)
+    shown.insert(1, "Hypothèse", running["hypothesis"].to_numpy())
+    shown = shown.drop(columns=["Calibrage", "Famille"]).rename(
+        columns={"vs buy & hold": "vs buy & hold (même période)"}
+    )
+    st.dataframe(shown, hide_index=True, width="stretch")
+    started = int(running["started_at"].min())
+    st.caption(f"Démarrées le {fmt.timestamp(started)}.")
+    ideal_comparison(running, plan, metric, started, key="hypothesis_compare")
+    with st.expander("Paramètres des SO d'hypothèses"):
+        st.dataframe(queries.hypothesis_parameters(ro()), hide_index=True, width="stretch")
+
+
 COMPARISONS = ("Top 5 des 300", "Médiane des 300", "Buy & hold")
-IDEAL_COLORS = ["#2f6fd6", "#8fb3ee", "#c2417a", "#e7a3c0"]
+IDEAL_COLORS = [
+    "#2f6fd6", "#8fb3ee", "#c2417a", "#e7a3c0", "#2a9d8f",
+    "#94d2c9", "#e07a1f", "#f3bd8c", "#7b61c9", "#bfb1e8",
+]  # fmt: skip
 
 
-def ideal_comparison(current: pd.DataFrame, plan: pd.DataFrame, metric: str, started: int) -> None:
+def ideal_comparison(
+    current: pd.DataFrame, plan: pd.DataFrame, metric: str, started: int, key: str = "ideal_compare"
+) -> None:
     """Valeur depuis le démarrage des idéales, face au top 5 actuel des 300 (classement
     choisi en haut de page), à leur médiane et au buy & hold, tous ramenés à 1 000 €."""
     st.markdown("##### Comparaison sur la même période")
-    chosen = st.multiselect(
-        "Comparer à", COMPARISONS, default=list(COMPARISONS), key="ideal_compare"
-    )
+    chosen = st.multiselect("Comparer à", COMPARISONS, default=list(COMPARISONS), key=key)
     conn = ro()
     fig = go.Figure()
     rows: list[dict[str, Any]] = []
@@ -626,7 +665,11 @@ def ideal_comparison(current: pd.DataFrame, plan: pd.DataFrame, metric: str, sta
     ideal_values = queries.value_series(conn, current["sim_id"].tolist())
     for color, (_, sim) in zip(IDEAL_COLORS, current.iterrows(), strict=False):
         points = ideal_values[ideal_values["sim_id"] == sim["sim_id"]]
-        label = f"{sim['Simulation']} · {sim['Objectif']} · {sim['Calibrage']}"
+        label = (
+            f"{sim['Simulation']} · {sim['hypothesis']}"
+            if isinstance(sim["hypothesis"], str)
+            else f"{sim['Simulation']} · {sim['Objectif']} · {sim['Calibrage']}"
+        )
         add(label, points["ts"].tolist(), points["value"].tolist(),
             {"color": color, "width": 3})  # fmt: skip
     window = queries.window_values(conn, started)
@@ -963,7 +1006,10 @@ def tab_production() -> None:
             & (ideal["trades"] >= MIN_TRADES_FOR_TORNADO)
         ].dropna(subset=[column])
         top = pd.concat([top, eligible])
-        ranks += [f"Idéale {o}" for o in eligible["Objectif"]]
+        ranks += [
+            h if isinstance(h, str) else f"Idéale {o}"
+            for h, o in zip(eligible["hypothesis"], eligible["Objectif"], strict=True)
+        ]
     top = top.reset_index(drop=True)
     if top.empty:
         st.info(

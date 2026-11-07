@@ -124,7 +124,7 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
     rows = []
     for r in conn.execute(
         """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, s.objective, s.generation,
-                  s.started_at, s.archived_at, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
+                  s.started_at, s.archived_at, s.hypothesis, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
                   m.closed_trades, m.win_rate, m.total_fees, m.bh_gap_eur, m.open_positions
            FROM simulations s LEFT JOIN metrics m ON m.sim_id = s.id
            WHERE s.kind = ? ORDER BY s.id""",
@@ -144,6 +144,7 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
                 "generation": r["generation"],
                 "started_at": r["started_at"],
                 "archived_at": r["archived_at"],
+                "hypothesis": r["hypothesis"],
                 "Filtre 1 j": _option(draw, "trend_enabled"),
                 "Type de filtre": _option(draw, "trend_type"),
                 "Stop": _option(draw, "stop_type"),
@@ -247,22 +248,62 @@ PERCENT_VARIABLES = {
 def ideal_parameters(conn: sqlite3.Connection, generation: int) -> pd.DataFrame:
     """Paramètres tirés de chaque objectif d'une génération idéale (variables applicables)."""
     draws = {
-        r["objective"]: json.loads(r["draw_json"])
+        f"Idéale {METRICS[r['objective']]}": json.loads(r["draw_json"])
         for r in conn.execute(
             "SELECT objective, draw_json FROM simulations WHERE kind = 'ideal' "
-            "AND generation = ? AND mode = 'typical' ORDER BY id",
+            "AND hypothesis IS NULL AND generation = ? AND mode = 'typical' ORDER BY id",
             (generation,),
         )
     }
+    return _parameters_table(draws)
+
+
+def hypothesis_parameters(conn: sqlite3.Connection) -> pd.DataFrame:
+    """Paramètres des SO d'hypothèses en cours (décision 47), une colonne par SO."""
+    draws = {
+        fmt.sim_label(r["id"], ideal=True): json.loads(r["draw_json"])
+        for r in conn.execute(
+            "SELECT id, draw_json FROM simulations WHERE hypothesis IS NOT NULL "
+            "AND started_at IS NOT NULL AND archived_at IS NULL ORDER BY id"
+        )
+    }
+    return _parameters_table(draws)
+
+
+EXIT_PARAMETERS = {
+    "stop_confirm": "Déclenchement du stop",
+    "grace_bars": "Bougies de grâce",
+    "breakeven_r": "Stop au prix d'entrée après",
+    "time_stop_bars": "Sortie temporelle après",
+}
+EXIT_OPTIONS = {"intrabar": "Intrabar", "close_4h": "Clôture 4 h", "grace": "Grâce puis intrabar"}
+
+
+def _parameters_table(draws: dict[str, dict[str, Any]]) -> pd.DataFrame:
     names = [c.name for c in CATEGORICALS] + [n.name for n in NUMERICS]
     rows = []
     for name in names:
-        values = {obj: draw.get(name) for obj, draw in draws.items()}
+        values = {column: draw.get(name) for column, draw in draws.items()}
         if all(v is None for v in values.values()):
             continue
         row = {"Paramètre": VARIABLE_LABELS[name]}
-        for objective, value in values.items():
-            row[f"Idéale {METRICS[objective]}"] = _parameter(name, value)
+        for column, value in values.items():
+            row[column] = _parameter(name, value)
+        rows.append(row)
+    for name, label in EXIT_PARAMETERS.items():
+        values = {column: draw.get(name) for column, draw in draws.items()}
+        if all(v is None for v in values.values()):
+            continue
+        row = {"Paramètre": label}
+        for column, value in values.items():
+            if value is None:
+                row[column] = "Intrabar" if name == "stop_confirm" else "—"
+            elif name == "stop_confirm":
+                row[column] = EXIT_OPTIONS.get(str(value), str(value))
+            elif name == "breakeven_r":
+                row[column] = f"{fmt.number(float(value), 1)} R"
+            else:
+                row[column] = f"{value} bougies 4 h"
         rows.append(row)
     return pd.DataFrame(rows)
 

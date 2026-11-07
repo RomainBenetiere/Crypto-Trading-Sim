@@ -1,6 +1,7 @@
 """Stratégie et gestion du risque : entrées, dimensionnement, stops, trailing, take profit,
 renforcement, pause, circuit breaker, filtre de fond, persistance des positions."""
 
+import json
 import sqlite3
 from dataclasses import replace
 from decimal import Decimal
@@ -13,6 +14,7 @@ from mcs.broker.base import OrderStatus, Reason
 from mcs.risk.exits import initial_stop, take_profit_level, trailing_level
 from mcs.risk.position import Position
 from mcs.risk.sizing import SizingInputs, entry_amount
+from mcs.sampling import build_config, draw_plan
 from mcs.storage.orders import load_orders
 from mcs.strategy.config import (
     EntryOrder,
@@ -22,6 +24,7 @@ from mcs.strategy.config import (
     SignalConfig,
     Sizing,
     StopConfig,
+    StopConfirm,
     StopType,
     StrategyConfig,
     TakeProfitConfig,
@@ -33,6 +36,7 @@ from mcs.strategy.config import (
     TrendFilterConfig,
 )
 from mcs.strategy.context import FramesContext
+from mcs.strategy.serialize import config_from_dict, config_from_json, config_to_json
 from mcs.strategy.simulation import PendingEntry
 from tests.strategy_harness import BAR, MARKET, RULES, Harness, Switch
 
@@ -551,3 +555,86 @@ async def test_dust_position_is_not_sold_below_minimum(conn: sqlite3.Connection)
     await h.bar(50.0, low=40.0)  # la position ne vaut plus que ~3 € : vente impossible
     assert MARKET in h.sim.positions
     assert [o.side for o in load_orders(conn, 1)] == ["buy"]  # aucune vente tentée
+
+
+# --- Sorties de la décision 47 ------------------------------------------------------------
+
+
+async def enter(config: StrategyConfig, conn: sqlite3.Connection) -> tuple[Harness, Position]:
+    h = Harness(conn, config)
+    await h.bar(100.0)
+    h.sim.config.signals.main.buy = False  # type: ignore[attr-defined]
+    return h, position(h)
+
+
+async def test_stop_confirmed_on_4h_close_with_hard_stop(conn: sqlite3.Connection) -> None:
+    exits = ExitConfig(reverse_signal=False, stop_confirm=StopConfirm.CLOSE_4H)
+    h, pos = await enter(make_config(Switch(buy=True), exits=exits), conn)
+    stop = float(pos.stop)
+    await h.bar(stop + 2, low=stop - 0.5)  # mèche sous le stop, clôture au-dessus
+    assert MARKET in h.sim.positions
+    await h.bar(stop - 0.2, low=stop - 0.5)  # clôture sous le stop
+    assert MARKET not in h.sim.positions
+    assert load_orders(conn, 1)[-1].reason is Reason.STOP
+
+
+async def test_hard_stop_while_waiting_for_close(conn: sqlite3.Connection) -> None:
+    exits = ExitConfig(reverse_signal=False, stop_confirm=StopConfirm.CLOSE_4H)
+    h, pos = await enter(make_config(Switch(buy=True), exits=exits), conn)
+    hard = float(pos.avg_entry_price - 2 * pos.risk_per_unit)
+    await h.bar(float(pos.stop) + 2, low=hard - 0.5)  # chute sous le stop d'urgence
+    assert MARKET not in h.sim.positions
+
+
+async def test_grace_period_then_intrabar(conn: sqlite3.Connection) -> None:
+    exits = ExitConfig(reverse_signal=False, stop_confirm=StopConfirm.GRACE, grace_bars=2)
+    h, pos = await enter(make_config(Switch(buy=True), exits=exits), conn)
+    stop = float(pos.stop)
+    for _ in range(2):  # 2 bougies de grâce : les mèches sont ignorées
+        await h.bar(stop + 2, low=stop - 0.5)
+        assert MARKET in h.sim.positions
+    await h.bar(stop + 2, low=stop - 0.5)  # 3e bougie : stop intrabar
+    assert MARKET not in h.sim.positions
+
+
+async def test_breakeven_after_one_r(conn: sqlite3.Connection) -> None:
+    exits = ExitConfig(reverse_signal=False, breakeven_r=D(1))
+    h, pos = await enter(make_config(Switch(buy=True), exits=exits), conn)
+    entry, risk = pos.avg_entry_price, pos.risk_per_unit
+    await h.bar(float(entry + risk / 2), high=float(entry + risk) + 0.1)
+    assert pos.stop == entry
+    await h.bar(float(entry) + 1, low=float(entry) - 0.1)
+    assert MARKET not in h.sim.positions
+
+
+async def test_time_stop_only_when_not_in_gain(conn: sqlite3.Connection) -> None:
+    exits = ExitConfig(reverse_signal=False, time_stop_bars=2)
+    h, pos = await enter(make_config(Switch(buy=True), exits=exits), conn)
+    entry = float(pos.avg_entry_price)
+    await h.bar(entry + 1, low=entry)
+    await h.bar(entry + 1, low=entry)  # 2 bougies, en gain : conservée
+    assert MARKET in h.sim.positions
+    await h.bar(entry - 0.5, low=entry - 1)  # plus en gain après 2 bougies : sortie
+    assert MARKET not in h.sim.positions
+    assert load_orders(conn, 1)[-1].reason is Reason.MAX_DURATION
+
+
+def test_exit_options_round_trip_and_old_configs() -> None:
+    draw = {
+        **draw_plan(seed=1, pairs=1)[0],
+        "stop_confirm": "grace",
+        "grace_bars": 4,
+        "breakeven_r": 1.5,
+        "time_stop_bars": 12,
+    }
+    config = build_config(draw)
+    assert config.exits.stop_confirm is StopConfirm.GRACE and config.exits.grace_bars == 4
+    assert config.exits.breakeven_r == D("1.5") and config.exits.time_stop_bars == 12
+    assert config_from_json(config_to_json(config)).exits == config.exits
+    old = json.loads(config_to_json(build_config(draw_plan(seed=1, pairs=1)[0])))
+    new_keys = ("stop_confirm", "grace_bars", "hard_stop_multiple", "breakeven_r", "time_stop_bars")
+    for key in new_keys:
+        del old["exits"][key]
+    exits = config_from_dict(old).exits  # configuration antérieure : sorties inchangées
+    assert exits.stop_confirm is StopConfirm.INTRABAR and exits.breakeven_r is None
+    assert exits.time_stop_bars is None

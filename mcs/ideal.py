@@ -14,6 +14,7 @@ fois, sans interaction) : c'est une hypothèse à valider, pas un optimum garant
 
 python -m mcs.ideal                   # P&L et ratio de Calmar
 python -m mcs.ideal --json ideal.json # tirages retenus, au format `draw_json`
+python -m mcs.ideal hypotheses --exit "clôture 4 h" "grâce 3"  # SO d'hypothèses (décision 47)
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ from mcs.sampling import (
     sim_ids,
     typical_indicators,
 )
-from mcs.storage.db import connect, transaction
+from mcs.storage.db import connect, now_ms, transaction
 from mcs.strategy.serialize import config_to_json
 
 
@@ -194,20 +195,30 @@ class IdealError(RuntimeError):
 class IdealState:
     requested_at: int | None
     message: str | None
-    pending: int | None  # génération en attente de son optimisation
-    current: int | None  # génération qui tourne
+    pending: int | None  # génération de la tornade en attente de son optimisation
+    current: int | None  # génération de la tornade qui tourne
+    pending_hypotheses: bool = False  # SO d'hypothèses en attente de leur optimisation
+
+    @property
+    def busy(self) -> bool:
+        return self.pending is not None or self.pending_hypotheses
 
 
 def read_ideal_state(conn: sqlite3.Connection) -> IdealState:
     row = conn.execute("SELECT ideal_requested_at, ideal_message FROM engine_state").fetchone()
     pending = conn.execute(
-        f"SELECT MAX(generation) FROM simulations WHERE {PENDING_IDEAL}"
+        f"SELECT MAX(generation) FROM simulations WHERE {PENDING_IDEAL} AND hypothesis IS NULL"
     ).fetchone()[0]
     current = conn.execute(
-        "SELECT MAX(generation) FROM simulations WHERE kind = 'ideal' "
+        "SELECT MAX(generation) FROM simulations WHERE kind = 'ideal' AND hypothesis IS NULL "
         "AND started_at IS NOT NULL AND archived_at IS NULL"
     ).fetchone()[0]
-    return IdealState(row["ideal_requested_at"], row["ideal_message"], pending, current)
+    hypotheses = conn.execute(
+        f"SELECT COUNT(*) FROM simulations WHERE {PENDING_IDEAL} AND hypothesis IS NOT NULL"
+    ).fetchone()[0]
+    return IdealState(
+        row["ideal_requested_at"], row["ideal_message"], pending, current, hypotheses > 0
+    )
 
 
 def request_generation(conn: sqlite3.Connection, now: int) -> None:
@@ -216,7 +227,7 @@ def request_generation(conn: sqlite3.Connection, now: int) -> None:
     if status == "NOT_STARTED":
         raise IdealError("Lancez d'abord les simulations.")
     state = read_ideal_state(conn)
-    if state.requested_at is not None or state.pending is not None:
+    if state.requested_at is not None or state.busy:
         raise IdealError("Une génération est déjà en préparation.")
     conn.execute("UPDATE engine_state SET ideal_requested_at = ?, updated_at = ?", (now, now))
 
@@ -294,20 +305,24 @@ def discard_pending(conn: sqlite3.Connection) -> None:
 def start_generation(
     conn: sqlite3.Connection, now: int, bh_value: Decimal | None
 ) -> tuple[list[int], list[int]]:
-    """Archive la génération en cours et démarre celle en attente.
+    """Démarre les simulations en attente ; une nouvelle génération de la tornade archive la
+    précédente (les SO d'hypothèses ne sont jamais archivées par la tornade).
     Retourne (simulations archivées, simulations démarrées)."""
-    archived = [
-        r[0]
-        for r in conn.execute(
-            "SELECT id FROM simulations WHERE kind = 'ideal' "
-            "AND started_at IS NOT NULL AND archived_at IS NULL"
-        )
-    ]
     started = [r[0] for r in conn.execute(f"SELECT id FROM simulations WHERE {PENDING_IDEAL}")]
+    tornado = conn.execute(
+        f"SELECT COUNT(*) FROM simulations WHERE {PENDING_IDEAL} AND hypothesis IS NULL"
+    ).fetchone()[0]
+    running = (
+        "kind = 'ideal' AND hypothesis IS NULL AND started_at IS NOT NULL AND archived_at IS NULL"
+    )
+    archived = (
+        [r[0] for r in conn.execute(f"SELECT id FROM simulations WHERE {running}")]
+        if tornado
+        else []
+    )
     with transaction(conn):
         conn.execute(
-            "UPDATE simulations SET archived_at = ? WHERE kind = 'ideal' "
-            "AND started_at IS NOT NULL AND archived_at IS NULL",
+            f"UPDATE simulations SET archived_at = ? WHERE id IN ({','.join(map(str, archived))})",
             (now,),
         )
         conn.execute(
@@ -322,6 +337,139 @@ def delete_all(conn: sqlite3.Connection) -> None:
     sont tirées (ordres, positions et valeurs supprimés en cascade)."""
     conn.execute("DELETE FROM simulations WHERE kind = 'ideal'")
     conn.execute("UPDATE engine_state SET ideal_requested_at = NULL, ideal_message = NULL")
+
+
+# --- SO d'hypothèses (décision 47) -----------------------------------------------------------
+
+# Valeurs neutres (médianes du plan, options sans effet mesurable) : seules les variables
+# testées s'en écartent, pour ne pas coller au bruit de la période analysée.
+NEUTRAL: Draw = {
+    "family": "supertrend",
+    "conf_adx": "no",
+    "conf_volume": "no",
+    "conf_rsi": "no",
+    "trend_enabled": "no",
+    "trend_type": None,
+    "trend_action": None,
+    "stop_type": "atr",
+    "trailing_type": "supertrend",
+    "trailing_activation": "gain_pct",
+    "take_profit_type": "partial",
+    "reverse_signal": "no",
+    "stop_recalc": "close_4h",
+    "max_holding": "none",
+    "entry_order": "limit",
+    "sizing": "fixed_pct",
+    "max_entries": "1",
+    "max_per_crypto": 0.6,
+    "max_exposure": 0.75,
+    "max_entry": 0.3,
+    "max_positions": 6,
+    "pause_after_stop_bars": 3,
+    "circuit_breaker_drawdown": 0.2,
+    "score_threshold": 0.675,
+    "main_weight": None,
+    "stop_pct": None,
+    "stop_atr_multiple": 1.9,
+    "stop_lowest_n": None,
+    "trailing_atr_multiple": None,
+    "trailing_pct": None,
+    "trailing_activation_gain": 0.03,
+    "tp_r_multiple": 2.5,
+    "tp_pct": None,
+    "max_holding_bars": None,
+    "risk_per_trade": None,
+    "limit_expiry_hours": 3,
+}
+HYPOTHESIS_BASES: dict[str, Draw] = {
+    # Supertrend gagne avec un stop ATR serré (interaction famille × multiple ATR).
+    "SO1 Supertrend serré": {},
+    # Le drawdown est la mesure la mieux expliquée : dimensionnement au risque, petites entrées.
+    "SO2 Drawdown minimal": {
+        "sizing": "risk",
+        "risk_per_trade": 0.006,
+        "max_entry": 0.15,
+        "max_exposure": 0.6,
+    },
+    # Deuxième famille robuste, qui préfère un stop large.
+    "SO3 EMA stop large": {
+        "family": "ema_cross",
+        "stop_atr_multiple": 3.6,
+        "trailing_type": "chandelier",
+        "trailing_atr_multiple": 3.0,
+    },
+}
+# Sorties comparées en backtest (stops déclenchés trop tôt : 44 % avant 12 h).
+EXIT_VARIANTS: dict[str, Draw] = {
+    "actuelle": {},
+    "clôture 4 h": {"stop_confirm": "close_4h"},
+    "grâce 3": {"stop_confirm": "grace", "grace_bars": 3},
+    "breakeven 1R": {"breakeven_r": 1},
+    "temporelle 12": {"time_stop_bars": 12},
+    "grâce+BE": {"stop_confirm": "grace", "grace_bars": 3, "breakeven_r": 1},
+    "grâce+BE+temps": {
+        "stop_confirm": "grace",
+        "grace_bars": 3,
+        "breakeven_r": 1,
+        "time_stop_bars": 12,
+    },
+    "clôture+BE+temps": {"stop_confirm": "close_4h", "breakeven_r": 1, "time_stop_bars": 12},
+}
+
+
+def hypothesis_draws(new_exits: Sequence[str]) -> dict[str, Draw]:
+    """Chaque base avec la sortie actuelle (témoin) et avec chacune des `new_exits`."""
+    unknown = [e for e in new_exits if e not in EXIT_VARIANTS or e == "actuelle"]
+    if unknown or not new_exits:
+        raise IdealError(f"sortie inconnue : {', '.join(unknown) or 'aucune'}")
+    return {
+        f"{base} · sortie {exit_name}": {**NEUTRAL, **overrides, **EXIT_VARIANTS[exit_name]}
+        for base, overrides in HYPOTHESIS_BASES.items()
+        for exit_name in ("actuelle", *new_exits)
+    }
+
+
+def create_hypotheses(conn: sqlite3.Connection, new_exits: Sequence[str], now: int) -> list[int]:
+    """Enregistre les SO d'hypothèses en attente (calibrage optimisé seulement) ; le moteur
+    les optimise puis les démarre comme une génération idéale."""
+    status = conn.execute("SELECT status FROM engine_state").fetchone()[0]
+    if status == "NOT_STARTED":
+        raise IdealError("Lancez d'abord les simulations.")
+    if read_ideal_state(conn).busy:
+        raise IdealError("Une génération est déjà en préparation.")
+    draws = hypothesis_draws(new_exits)
+    pair = conn.execute("SELECT MAX(pair_id) FROM simulations").fetchone()[0]
+    rows, params = [], []
+    for label, draw in draws.items():
+        pair += 1
+        sim_id = sim_ids(pair)[1]  # jumelle optimisée seulement
+        config = build_config(draw)
+        rows.append(
+            (
+                sim_id,
+                pair,
+                draw["family"],
+                config_to_json(config),
+                json.dumps(draw, sort_keys=True),
+                secrets.randbits(31),
+                now,
+                label,
+            )
+        )
+        params.extend(indicator_rows(sim_id, config, typical_indicators(draw)))
+    with transaction(conn):
+        conn.executemany(
+            """INSERT INTO simulations (id, pair_id, mode, family, config_json, draw_json, seed,
+                   created_at, kind, hypothesis)
+               VALUES (?, ?, 'optimized', ?, ?, ?, ?, ?, 'ideal', ?)""",
+            rows,
+        )
+        conn.executemany(
+            """INSERT INTO indicator_params (sim_id, role, indicator, params_json,
+                   typical_params_json, weight, score_threshold) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            params,
+        )
+    return [row[0] for row in rows]
 
 
 # --- Rapport --------------------------------------------------------------------------------
@@ -380,11 +528,29 @@ def main(argv: Sequence[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("command", nargs="?", choices=("report", "hypotheses"), default="report")
     parser.add_argument("--db", type=Path, help="base à analyser (défaut : DB_PATH du .env)")
     parser.add_argument("--json", type=Path, help="écrit les tirages retenus dans ce fichier")
+    parser.add_argument(
+        "--exit",
+        nargs="+",
+        choices=[e for e in EXIT_VARIANTS if e != "actuelle"],
+        help="nouvelles sorties, comparées à la sortie actuelle",
+    )
     args = parser.parse_args(argv)
     settings = load_settings()
     conn = connect(args.db or settings.db_path, settings.journal_mode)
+    if args.command == "hypotheses":
+        try:
+            if args.exit is None:
+                raise IdealError("précisez --exit.")
+            ids = create_hypotheses(conn, args.exit, now_ms())
+        except IdealError as exc:
+            raise SystemExit(f"Refusé : {exc}") from None
+        finally:
+            conn.close()
+        print(f"{len(ids)} SO d'hypothèses créées ({ids[0]} à {ids[-1]}), démarrage par le moteur.")
+        return
     try:
         records = load_records(conn)
     finally:

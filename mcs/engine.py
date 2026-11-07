@@ -271,7 +271,7 @@ class Engine:
             )
             log.info("Simulations idéales : génération %d créée.", generation)
             state = ideals.read_ideal_state(self.conn)
-        if state.pending is None:
+        if not state.busy:
             return
         if self.status is Status.NOT_STARTED or self.broker is None:
             return
@@ -284,15 +284,15 @@ class Engine:
         elif self.ideal_process.poll() is not None:
             self.ideal_process = None
             ideals.discard_pending(self.conn)
+            what = "SO d'hypothèses" if state.pending is None else f"Génération {state.pending}"
             ideals.finish_request(
                 self.conn,
-                f"Génération {state.pending} abandonnée : échec de l'optimisation "
-                "(voir logs/optimizer).",
+                f"{what} abandonnée : échec de l'optimisation (voir logs/optimizer).",
                 now,
             )
             log.error("Simulations idéales : optimisation de la génération en échec.")
 
-    async def _start_ideals(self, generation: int, now: int) -> None:
+    async def _start_ideals(self, generation: int | None, now: int) -> None:
         """Archive la génération en cours (ordres en attente annulés, positions et métriques
         figées) et démarre la nouvelle, à 1 000 € chacune."""
         assert self.broker is not None and self.ctx is not None
@@ -312,10 +312,9 @@ class Engine:
             self._add_simulation(stored.id, stored.config)
             self.ideal_bh[stored.id] = bh_value
         self.sim_states.save([self.sims[i] for i in started], now)
-        ideals.finish_request(
-            self.conn, f"Génération {generation} démarrée ({len(started)} simulations).", now
-        )
-        log.info("Simulations idéales : génération %d démarrée.", generation)
+        what = "SO d'hypothèses" if generation is None else f"Génération {generation}"
+        ideals.finish_request(self.conn, f"{what} démarrée ({len(started)} simulations).", now)
+        log.info("Simulations idéales : %s démarrée.", what)
 
     async def sync_shadow(self) -> None:
         if production.read_state(self.conn).reset_requested_at is not None:

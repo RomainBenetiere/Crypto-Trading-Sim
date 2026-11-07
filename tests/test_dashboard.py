@@ -308,6 +308,9 @@ async def test_app_ideal_section_and_production_choice(app_db: Path) -> None:
     conn.execute("UPDATE simulations SET optimized_at = 1 WHERE kind = 'ideal'")
     await engine.process_commands()
     assert ideals.read_ideal_state(conn).current == 1
+    ideals.create_hypotheses(conn, ["clôture 4 h"], engine.clock())
+    conn.execute("UPDATE simulations SET optimized_at = 1 WHERE hypothesis IS NOT NULL")
+    await engine.process_commands()
     clock = engine.clock
     for _ in range(4):
         clock.now += HOUR  # type: ignore[attr-defined]
@@ -320,6 +323,9 @@ async def test_app_ideal_section_and_production_choice(app_db: Path) -> None:
     assert any("Génération 1 démarrée" in c.value for c in at.caption)
     assert any("Sur la même période, les 300" in c.value for c in at.caption)
     assert any("Comparaison sur la même période" in m.value for m in at.markdown)
+    assert any("SO d'hypothèses (analyse statistique)" in m.value for m in at.markdown)
+    hypotheses = [v for df in at.dataframe for v in df.value.get("Hypothèse", [])]
+    assert "SO1 Supertrend serré · sortie clôture 4 h" in hypotheses
     labels = [v for df in at.dataframe for v in df.value.get("Simulation", [])]
     assert "SO-009" in labels and "S-009" not in labels  # idéales : indicatif SO
     curves = [v for df in at.dataframe for v in df.value.get("Courbe", [])]

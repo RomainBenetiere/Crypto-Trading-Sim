@@ -31,6 +31,7 @@ from mcs.strategy.config import (
     SignalConfig,
     Sizing,
     StopConfig,
+    StopConfirm,
     StopRecalc,
     StopType,
     StrategyConfig,
@@ -140,16 +141,28 @@ def config_from_dict(data: dict[str, Any]) -> StrategyConfig:
             }
         ),
         take_profit=TakeProfitConfig(**{**tp, "type": TakeProfitType(tp["type"])}),
-        exits=ExitConfig(
-            reverse_signal=data["exits"]["reverse_signal"],
-            recalc=StopRecalc(data["exits"]["recalc"]),
-            max_holding_bars=data["exits"]["max_holding_bars"],
-        ),
+        exits=_exits(data["exits"]),
         execution=ExecutionConfig(
             entry_order=EntryOrder(data["execution"]["entry_order"]),
             limit_expiry_hours=data["execution"]["limit_expiry_hours"],
         ),
         portfolio=PortfolioConfig(**{**portfolio, "sizing": Sizing(portfolio["sizing"])}),
+    )
+
+
+def _exits(data: dict[str, Any]) -> ExitConfig:
+    """Champs de la décision 47 absents des configurations antérieures : valeurs par défaut."""
+    default = ExitConfig()
+    breakeven = data.get("breakeven_r")
+    return ExitConfig(
+        reverse_signal=data["reverse_signal"],
+        recalc=StopRecalc(data["recalc"]),
+        max_holding_bars=data["max_holding_bars"],
+        stop_confirm=StopConfirm(data.get("stop_confirm", default.stop_confirm)),
+        grace_bars=data.get("grace_bars", default.grace_bars),
+        hard_stop_multiple=Decimal(data.get("hard_stop_multiple", default.hard_stop_multiple)),
+        breakeven_r=None if breakeven is None else Decimal(breakeven),
+        time_stop_bars=data.get("time_stop_bars"),
     )
 
 

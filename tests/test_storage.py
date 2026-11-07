@@ -176,6 +176,7 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE simulations DROP COLUMN started_at;
         ALTER TABLE simulations DROP COLUMN archived_at;
         ALTER TABLE simulations DROP COLUMN bh_start_value;
+        ALTER TABLE simulations DROP COLUMN hypothesis;
         ALTER TABLE engine_state DROP COLUMN ideal_requested_at;
         ALTER TABLE engine_state DROP COLUMN ideal_message;
         PRAGMA user_version = 1;
@@ -190,6 +191,7 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
     production_columns = {r["name"] for r in conn.execute("PRAGMA table_info(production_state)")}
     assert "shadow_reset_requested_at" in production_columns
     sim_columns = {r["name"] for r in conn.execute("PRAGMA table_info(simulations)")}
-    assert {"kind", "objective", "generation", "started_at", "archived_at"} <= sim_columns
+    ideal_columns = {"kind", "objective", "generation", "started_at", "archived_at", "hypothesis"}
+    assert ideal_columns <= sim_columns
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()

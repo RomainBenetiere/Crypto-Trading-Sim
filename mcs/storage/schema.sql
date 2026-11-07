@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS simulations (
     started_at        INTEGER,
     archived_at       INTEGER,
     bh_start_value    TEXT,
+    hypothesis        TEXT,  -- SO d'hypothèses (décision 47) : libellé ; NULL pour la tornade
     UNIQUE (pair_id, mode)
 );
 
