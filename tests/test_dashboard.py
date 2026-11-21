@@ -399,6 +399,13 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     engine.adaptive_launcher = lambda workers: None  # optimisation simulée ci-dessous
     conn.execute("UPDATE simulations SET optimized_at = 1 WHERE kind = 'adaptive'")
     await engine.process_commands()
+    # Une génération R en même temps : clés des deux graphiques distinctes.
+    engine.recalibration_launcher = lambda workers: None
+    request_command(conn, Command.OPTIMIZE, engine.clock())
+    await engine.process_commands()
+    conn.execute("UPDATE simulations SET optimized_at = 1 WHERE kind = 'recalibrated'")
+    await engine.process_commands()
+    assert recalibration.read_state(conn).active == (2,)
     clock = engine.clock
     for _ in range(4):
         clock.now += HOUR  # type: ignore[attr-defined]

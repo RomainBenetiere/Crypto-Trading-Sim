@@ -860,12 +860,12 @@ def recalibration_detail(conn: Any, gen: pd.DataFrame, name: str | None = None) 
             {"color": MUTED, "width": 2},
         ),
     ]
-    for name, frame, line in curves:
+    for curve, frame, line in curves:
         if frame.empty:
             continue
         median = frame.groupby("ts")["value"].median()
         fig.add_scatter(
-            x=[paris(t) for t in median.index], y=median.tolist(), mode="lines", name=name,
+            x=[paris(t) for t in median.index], y=median.tolist(), mode="lines", name=curve,
             line=line,
         )  # fmt: skip
     start_value = queries.ideal_bh_start(conn, int(gen["sim_id"].iloc[0]))
