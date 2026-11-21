@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+import mcs.adaptive as adaptive
 import mcs.recalibration as recalibration
 from dashboard import fmt
 from mcs.live.state import Command, period_totals, request_command
@@ -201,6 +202,8 @@ def ideal_ids(conn: sqlite3.Connection, running_only: bool = False) -> list[int]
 def _label(kind: str, sim_id: int, generation: int | None, source: int | None) -> str:
     if kind == "recalibrated" and generation is not None and source is not None:
         return recalibration.label(generation, source)
+    if kind == "adaptive" and source is not None:
+        return adaptive.label(source)
     return fmt.sim_label(sim_id, ideal=kind == "ideal")
 
 

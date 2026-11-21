@@ -16,15 +16,16 @@ CREATE TABLE IF NOT EXISTS simulations (
     optimized_at      INTEGER,
     -- Simulations idéales (décision 46) et recalibrages (décision 48) : par générations ;
     -- une génération attend son optimisation (started_at NULL), tourne, puis est archivée.
+    -- Série RA (décision 49) : réoptimisée chaque vendredi, sans générations.
     kind              TEXT    NOT NULL DEFAULT 'plan'
-                      CHECK (kind IN ('plan', 'ideal', 'recalibrated')),
+                      CHECK (kind IN ('plan', 'ideal', 'recalibrated', 'adaptive')),
     objective         TEXT    CHECK (objective IN ('pnl', 'calmar')),
     generation        INTEGER,
     started_at        INTEGER,
     archived_at       INTEGER,
     bh_start_value    TEXT,
     hypothesis        TEXT,  -- SO d'hypothèses (décision 47) : libellé ; NULL pour la tornade
-    source_sim_id     INTEGER,  -- recalibrage (décision 48) : jumelle optimisée d'origine
+    source_sim_id     INTEGER,  -- recalibrage, série RA : jumelle optimisée d'origine
     UNIQUE (pair_id, mode)
 );
 
@@ -174,7 +175,12 @@ CREATE TABLE IF NOT EXISTS engine_state (
     updated_at           INTEGER NOT NULL,
     ideal_requested_at   INTEGER,
     ideal_message        TEXT,
-    recalibration_message TEXT  -- recalibrages (décision 48) : dernier événement
+    recalibration_message TEXT,  -- recalibrages (décision 48) : dernier événement
+    -- Série RA (décision 49) : début de la dernière réoptimisation hebdomadaire, réglages
+    -- appliqués par le moteur, dernier événement.
+    adaptive_run_at      INTEGER,
+    adaptive_applied_at  INTEGER,
+    adaptive_message     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS run_periods (

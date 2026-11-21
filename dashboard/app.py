@@ -24,6 +24,7 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
+import mcs.adaptive as adaptive  # noqa: E402
 import mcs.ideal as ideals  # noqa: E402
 import mcs.recalibration as recalibration  # noqa: E402
 from dashboard import chart_tab, fmt, queries  # noqa: E402
@@ -110,6 +111,11 @@ def ideal_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def recalibrated_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
     return queries.simulations_table(ro(), kind="recalibrated")
+
+
+@st.cache_data(show_spinner=False)
+def adaptive_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
+    return queries.simulations_table(ro(), kind="adaptive")
 
 
 @st.cache_data(show_spinner=False)
@@ -828,11 +834,12 @@ def recalibration_generations(conn: Any, table: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def recalibration_detail(conn: Any, gen: pd.DataFrame) -> None:
-    """Courbes médianes ramenées à 1 000 € : recalibrages, jumelles d'origine, jumelles
-    typiques du plan et buy & hold, sur la période de la génération."""
+def recalibration_detail(conn: Any, gen: pd.DataFrame, name: str | None = None) -> None:
+    """Courbes médianes ramenées à 1 000 € : recalibrages (ou série RA), jumelles d'origine,
+    jumelles typiques du plan et buy & hold, sur la période de la génération."""
     start, end = _generation_window(gen)
-    generation = int(gen["generation"].iloc[0])
+    generation = 0 if name else int(gen["generation"].iloc[0])
+    name = name or f"R{generation}"
     sources = [int(s) for s in gen["source_sim_id"]]
     fig = go.Figure()
     own = queries.value_series(conn, [int(i) for i in gen["sim_id"]])
@@ -841,7 +848,7 @@ def recalibration_detail(conn: Any, gen: pd.DataFrame) -> None:
         own = own[own["ts"] <= end]
         window = window[window["ts"] <= end]
     curves = [
-        (f"Recalibrages R{generation} (médiane)", own, {"color": PRIMARY, "width": 3}),
+        (f"{name} (médiane)", own, {"color": PRIMARY, "width": 3}),
         (
             "Jumelles optimisées d'origine (médiane)",
             window[window["sim_id"].isin(sources)],
@@ -878,7 +885,7 @@ def recalibration_detail(conn: Any, gen: pd.DataFrame) -> None:
         hovermode="x unified",
     )
     fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
-    st.plotly_chart(fig, width="stretch", key=f"recal_chart_{generation}")
+    st.plotly_chart(fig, width="stretch", key=f"recal_chart_{name}")
     gaps = _period_gaps(conn, gen).set_index("sim_id")
     shown = metrics_columns(gen).drop(columns=["Calibrage"])
     shown.insert(1, "Origine", [fmt.sim_label(int(s)) for s in gen["source_sim_id"]])
@@ -891,8 +898,56 @@ def recalibration_detail(conn: Any, gen: pd.DataFrame) -> None:
     shown["Apprentissage"] = gen["train_score"].map(_score).to_numpy()
     shown["Validation"] = gen["validation_score"].map(_score).to_numpy()
     order = gaps.loc[gen["sim_id"], "gap"].fillna(float("-inf")).to_numpy().argsort()[::-1]
-    with st.expander(f"Détail des {len(gen)} simulations R{generation}"):
+    with st.expander(f"Détail des {len(gen)} simulations {name}"):
         st.dataframe(shown.iloc[order], hide_index=True, width="stretch")
+
+
+# --- Série RA (décision 49) ------------------------------------------------------------------
+
+
+def adaptive_section(version: tuple[Any, ...]) -> None:
+    st.subheader("Série RA (réoptimisée chaque vendredi)")
+    st.caption(
+        "150 simulations, copies des jumelles optimisées du plan (RA-150 pour S-150), dont "
+        "les indicateurs sont réoptimisés chaque vendredi à 21 h 05 sur les 12 derniers mois "
+        "(70/30, moyenne apprentissage / validation). Mêmes numéros, portefeuille continu : "
+        "positions conservées, nouveaux réglages dès la fin de l'optimisation. Sélectionnables "
+        "en production après 10 trades ; une RA en production y suit ses réoptimisations."
+    )
+    conn = ro()
+    state = adaptive.read_state(conn)
+    if state.message:
+        st.caption(f"Dernier événement : {state.message}")
+    if not state.exists:
+        running = queries.engine_info(conn).status != "NOT_STARTED"
+        with st.popover("Créer la série RA", disabled=not running):
+            st.write(
+                "Les jumelles optimisées du plan sont copiées et optimisées (quelques "
+                "minutes), puis démarrent à 1 000 €. Elles seront réoptimisées chaque "
+                "vendredi à 21 h 05."
+            )
+            if st.button("Confirmer la création", key="btn_adaptive_create"):
+                try:
+                    adaptive.create_series(rw(), now_ms())
+                except adaptive.AdaptiveError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        return
+    if state.pending_start:
+        st.info("Série RA en préparation : première optimisation des indicateurs, puis démarrage.")
+        return
+    parts = []
+    if state.running:
+        parts.append(f"réoptimisation en cours ({state.count - state.outdated} / {state.count})")
+    if state.applied_at:
+        parts.append(f"dernière réoptimisation le {fmt.timestamp(state.applied_at)}")
+    parts.append(f"prochaine le {fmt.timestamp(adaptive.next_slot(now_ms()))}")
+    st.markdown(" · ".join(parts).capitalize() + ".")
+    table = adaptive_simulations(version)
+    if table.empty:
+        return
+    recalibration_detail(conn, table, name="Série RA")
 
 
 def buy_and_hold_table() -> None:
@@ -1006,6 +1061,7 @@ def tab_follow_up() -> None:
         top5(table, metric)
         ideal_section(version, table, metric)
         recalibration_section(version)
+        adaptive_section(version)
         buy_and_hold_table()
     all_simulations(table)
 
@@ -1173,7 +1229,9 @@ def tab_production() -> None:
     if table.empty:
         st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
         return
-    st.markdown("#### Choisir parmi les 5 meilleures simulations (et les idéales)")
+    st.markdown(
+        "#### Choisir parmi les 5 meilleures simulations (et les idéales, les 5 meilleures RA)"
+    )
     metric = st.radio(
         "Classer par",
         list(METRICS),
@@ -1196,6 +1254,15 @@ def tab_production() -> None:
             h if isinstance(h, str) else f"Idéale {o}"
             for h, o in zip(eligible["hypothesis"], eligible["Objectif"], strict=True)
         ]
+    series = adaptive_simulations(data_version())
+    if not series.empty:
+        best = (
+            series[series["trades"] >= MIN_TRADES_FOR_TORNADO]
+            .dropna(subset=[column])
+            .nlargest(5, column)
+        )
+        top = pd.concat([top, best])
+        ranks += [f"Série RA {i}" for i in range(1, len(best) + 1)]
     top = top.reset_index(drop=True)
     if top.empty:
         st.info(

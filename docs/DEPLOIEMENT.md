@@ -122,6 +122,10 @@ Simulations en marche ou en Hold, le bouton « Optimiser les indicateurs » cré
 
 La mise à jour vers le schéma v14 reconstruit la table `simulations` au premier démarrage du moteur (quelques secondes) ; sauvegarder la base avant le déploiement.
 
+## Série RA
+
+Simulations en marche ou en Hold, « Créer la série RA » (onglet de suivi) ou `docker compose exec engine python -m mcs.adaptive create` crée 150 simulations RA-xxx, optimisées puis démarrées par le moteur. Elles sont réoptimisées chaque vendredi à 21 h 05 (journal `logs/optimizer`), sans changer de numéro ni perdre leurs positions ; `python -m mcs.adaptive status` affiche l'état. Une RA choisie en production y suit ses réoptimisations.
+
 ## 7. Mode production : ombre
 
 L'onglet « Production » du dashboard permet de choisir un scénario parmi les 5 meilleures simulations, puis de démarrer le mode ombre : le scénario tourne sur son propre portefeuille (300 € par défaut), ordres calculés au carnet réel mais **jamais envoyés**. L'ombre ne tourne que lorsque les simulations sont en marche.

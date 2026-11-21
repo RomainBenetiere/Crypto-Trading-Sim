@@ -33,6 +33,7 @@ python -m mcs.collector live             # collecte continue (REST + WebSocket)
 python -m mcs.sampling generate         # plan Monte-Carlo (--seed N, --force)
 python -m mcs.optimizer run --workers 8  # optimisation 70/30 des jumelles optimisées
 python -m mcs.optimizer recalibrate      # génération de recalibrage en attente (lancée par le moteur)
+python -m mcs.adaptive create|status     # série RA réoptimisée chaque vendredi (décision 49)
 python -m mcs.engine                     # moteur live (collecte + 300 simulations + commandes)
 streamlit run dashboard/app.py
 python -m mcs.health --hours 72          # rapport de santé (rodage)

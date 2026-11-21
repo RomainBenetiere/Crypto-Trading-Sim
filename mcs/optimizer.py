@@ -3,6 +3,7 @@
     python -m mcs.optimizer run [--workers N] [--only SIM_ID ...] [--trials 40] [--force]
     python -m mcs.optimizer ideal [--workers N]   # génération idéale en attente (moteur)
     python -m mcs.optimizer recalibrate [--workers N]   # recalibrage en attente (moteur)
+    python -m mcs.optimizer adaptive [--workers N]   # série RA : création ou vendredi (moteur)
 
 Pour chaque simulation `optimized` : 40 jeux de valeurs d'indicateurs (valeurs typiques + 39
 tirés par hypercube latin dans les plages du §4) sont évalués par backtest sur les 70 % les
@@ -19,6 +20,7 @@ plus un contrôle indépendant.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import math
 import sqlite3
@@ -31,6 +33,7 @@ from typing import Any
 import numpy as np
 from scipy.stats import qmc
 
+from mcs.adaptive import outdated_clause
 from mcs.backtest import Dataset, load_dataset, run_backtest
 from mcs.broker.fees import FeeSchedule
 from mcs.config import load_settings
@@ -391,6 +394,38 @@ def run_recalibration(
     )
 
 
+WEEK_MS = 7 * 86_400_000
+
+
+def run_adaptive(
+    conn: sqlite3.Connection,
+    fees: FeeSchedule,
+    workers: int = 1,
+    trials: int = TRIALS,
+    data: Dataset | None = None,
+) -> list[OptimizationResult]:
+    """Série RA (décision 49) : première optimisation, puis réoptimisation du vendredi, comme
+    les recalibrages. Graine décalée chaque semaine : nouveaux essais de l'hypercube. Reprend
+    après interruption (simulations pas encore optimisées pour la réoptimisation en cours)."""
+    run_at = conn.execute("SELECT adaptive_run_at FROM engine_state").fetchone()[0]
+    sims = [
+        dataclasses.replace(s, seed=(s.seed + (run_at or 0) // WEEK_MS) % 2**31)
+        for s in load_simulations(conn, outdated_clause())
+    ]
+    if not sims:
+        raise OptimizationError("Aucune simulation RA à optimiser.")
+    return _optimize_all(
+        conn,
+        sims,
+        data or live_dataset(conn),
+        fees,
+        workers,
+        trials,
+        MEAN,
+        RECALIBRATION_WINDOW_DAYS,
+    )
+
+
 def _optimize_all(
     conn: sqlite3.Connection,
     sims: Sequence[StoredSimulation],
@@ -441,7 +476,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("command", choices=("run", "ideal", "recalibrate"))
+    parser.add_argument("command", choices=("run", "ideal", "recalibrate", "adaptive"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--trials", type=int, default=TRIALS)
     parser.add_argument("--only", type=int, nargs="*", help="identifiants de simulations")
@@ -457,6 +492,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             results = run_ideal(conn, fees, args.workers, args.trials)
         elif args.command == "recalibrate":
             results = run_recalibration(conn, fees, args.workers, args.trials)
+        elif args.command == "adaptive":
+            results = run_adaptive(conn, fees, args.workers, args.trials)
         else:
             results = run(
                 conn, fees, args.workers, args.trials, args.only, args.force, recalibrate=args.all

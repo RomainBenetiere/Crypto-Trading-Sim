@@ -179,6 +179,9 @@ def test_migrations_from_v1(tmp_path: Path) -> None:
         ALTER TABLE simulations DROP COLUMN hypothesis;
         ALTER TABLE simulations DROP COLUMN source_sim_id;
         ALTER TABLE engine_state DROP COLUMN recalibration_message;
+        ALTER TABLE engine_state DROP COLUMN adaptive_run_at;
+        ALTER TABLE engine_state DROP COLUMN adaptive_applied_at;
+        ALTER TABLE engine_state DROP COLUMN adaptive_message;
         ALTER TABLE engine_state DROP COLUMN ideal_requested_at;
         ALTER TABLE engine_state DROP COLUMN ideal_message;
         PRAGMA user_version = 1;

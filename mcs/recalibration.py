@@ -64,12 +64,6 @@ def create_generation(conn: sqlite3.Connection, now: int) -> int:
     des indicateurs en attendant l'optimisation) en une génération en attente."""
     if read_state(conn).pending is not None:
         raise RecalibrationError("une génération de recalibrage est déjà en préparation.")
-    sources = conn.execute(
-        "SELECT id, family, draw_json FROM simulations "
-        "WHERE kind = 'plan' AND mode = 'optimized' ORDER BY id"
-    ).fetchall()
-    if not sources:
-        raise RecalibrationError("aucune jumelle optimisée dans le plan.")
     generation = (
         int(
             conn.execute(
@@ -78,6 +72,20 @@ def create_generation(conn: sqlite3.Connection, now: int) -> int:
         )
         + 1
     )
+    copy_plan(conn, now, "recalibrated", generation)
+    return generation
+
+
+def copy_plan(conn: sqlite3.Connection, now: int, kind: str, generation: int | None) -> list[int]:
+    """Copie les jumelles optimisées du plan (configuration de base identique, valeurs typiques
+    des indicateurs en attendant l'optimisation), en attente de démarrage (`started_at` NULL).
+    Retourne les identifiants créés."""
+    sources = conn.execute(
+        "SELECT id, family, draw_json FROM simulations "
+        "WHERE kind = 'plan' AND mode = 'optimized' ORDER BY id"
+    ).fetchall()
+    if not sources:
+        raise RecalibrationError("aucune jumelle optimisée dans le plan.")
     pair = int(conn.execute("SELECT MAX(pair_id) FROM simulations").fetchone()[0])
     rows, params = [], []
     for source in sources:
@@ -103,15 +111,15 @@ def create_generation(conn: sqlite3.Connection, now: int) -> int:
         conn.executemany(
             """INSERT INTO simulations (id, pair_id, mode, family, config_json, draw_json, seed,
                    created_at, kind, generation, source_sim_id)
-               VALUES (?, ?, 'optimized', ?, ?, ?, ?, ?, 'recalibrated', ?, ?)""",
-            rows,
+               VALUES (?, ?, 'optimized', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(*row[:7], kind, *row[7:]) for row in rows],
         )
         conn.executemany(
             """INSERT INTO indicator_params (sim_id, role, indicator, params_json,
                    typical_params_json, weight, score_threshold) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
-    return generation
+    return [row[0] for row in rows]
 
 
 def pending_ready(conn: sqlite3.Connection) -> bool:

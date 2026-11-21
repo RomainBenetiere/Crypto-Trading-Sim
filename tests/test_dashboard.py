@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from dashboard import queries
+from mcs import adaptive, production, recalibration
 from mcs import ideal as ideals
-from mcs import production, recalibration
 from mcs.broker.fees import FeeSchedule
 from mcs.config import JournalMode
 from mcs.engine import Engine
@@ -385,3 +385,30 @@ async def test_app_recalibration_section(app_db: Path) -> None:
     # Bouton « Optimiser » en marche : confirmation, puis commande.
     at.button(key="btn_optimize").click().run()
     assert any("génération de recalibrage" in w.value for w in at.warning)
+
+
+async def test_app_adaptive_section(app_db: Path) -> None:
+    conn = connect(app_db, JournalMode.WAL)
+    prepare(conn)
+    engine = await run_live(conn, bars=2)  # connexion du moteur : gardée ouverte
+    at = run_app()
+    assert any(s.value == "Série RA (réoptimisée chaque vendredi)" for s in at.subheader)
+    at.button(key="btn_adaptive_create").click().run()
+    assert not at.exception
+    assert adaptive.read_state(conn).pending_start
+    engine.adaptive_launcher = lambda workers: None  # optimisation simulée ci-dessous
+    conn.execute("UPDATE simulations SET optimized_at = 1 WHERE kind = 'adaptive'")
+    await engine.process_commands()
+    clock = engine.clock
+    for _ in range(4):
+        clock.now += HOUR  # type: ignore[attr-defined]
+        await engine.on_tick(clock())
+    conn.execute("UPDATE metrics SET closed_trades = 12")
+    conn.close()
+    at = run_app()
+    assert not at.exception
+    assert any("Prochaine le" in m.value for m in at.markdown)
+    labels = [v for df in at.dataframe for v in df.value.get("Simulation", [])]
+    assert "RA-002" in labels
+    ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
+    assert "Série RA 1" in ranks  # sélectionnable en production après 10 trades

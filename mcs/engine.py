@@ -35,6 +35,7 @@ from typing import Any
 
 import httpx
 
+import mcs.adaptive as adaptive
 import mcs.ideal as ideals
 import mcs.recalibration as recalibration
 from mcs import production
@@ -118,6 +119,12 @@ def launch_ideal_optimizer(workers: int) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command)
 
 
+def launch_adaptive_optimizer(workers: int) -> subprocess.Popen[bytes]:
+    """Optimisation de la série RA (création ou vendredi), dans un processus séparé."""
+    command = [sys.executable, "-m", "mcs.optimizer", "adaptive", "--workers", str(workers)]
+    return subprocess.Popen(command)
+
+
 def launch_recalibration_optimizer(workers: int) -> subprocess.Popen[bytes]:
     """Optimisation du recalibrage en attente (décision 48), dans un processus séparé."""
     command = [sys.executable, "-m", "mcs.optimizer", "recalibrate", "--workers", str(workers)]
@@ -138,6 +145,7 @@ class Engine:
         optimizer_launcher: Callable[[int, bool], Any] = launch_optimizer,
         ideal_launcher: Callable[[int], Any] = launch_ideal_optimizer,
         recalibration_launcher: Callable[[int], Any] = launch_recalibration_optimizer,
+        adaptive_launcher: Callable[[int], Any] = launch_adaptive_optimizer,
         trading: BitvavoTrading | None = None,
         max_capital: Decimal | None = None,
     ) -> None:
@@ -150,6 +158,8 @@ class Engine:
         self.ideal_process: Any = None
         self.recalibration_launcher = recalibration_launcher
         self.recalibration_process: Any = None
+        self.adaptive_launcher = adaptive_launcher
+        self.adaptive_process: Any = None
         self.basket: list[str] = []
         # Valeur du buy & hold au démarrage de chaque simulation idéale ou recalibrée en cours
         # (écart au buy & hold sur sa propre période).
@@ -258,6 +268,7 @@ class Engine:
             processed = await self._process_next_command()
             await self.sync_ideals()
             await self.sync_recalibration()
+            await self.sync_adaptive()
             await self.sync_shadow()
             await self.sync_live()
             return processed
@@ -345,6 +356,83 @@ class Engine:
                 now,
             )
             log.error("Recalibrage : optimisation de la génération R%d en échec.", state.pending)
+
+    # --- Série RA (décision 49) ---------------------------------------------------------------
+
+    async def sync_adaptive(self) -> None:
+        """Première optimisation puis démarrage de la série ; chaque vendredi 21 h 05,
+        réoptimisation puis application des nouveaux réglages (et suivi en production)."""
+        state = adaptive.read_state(self.conn)
+        if not state.exists or self.status is Status.NOT_STARTED or self.broker is None:
+            return
+        now = self.clock()
+        if state.pending_start:
+            if state.outdated == 0:
+                self.adaptive_process = None
+                bh_value = self._bh_value()
+                started = adaptive.start_series(self.conn, now, bh_value)
+                await self._activate([], started, bh_value, now)
+                adaptive.set_message(
+                    self.conn, f"Série RA démarrée ({len(started)} simulations).", now
+                )
+                log.info("Série RA démarrée (%d simulations).", len(started))
+            elif self.adaptive_process is None:
+                self.adaptive_process = self.adaptive_launcher(self.optimizer_workers)
+            elif self.adaptive_process.poll() is not None:
+                self.adaptive_process = None
+                adaptive.delete_all(self.conn)
+                adaptive.set_message(
+                    self.conn, "Série RA abandonnée : échec de la première optimisation.", now
+                )
+                log.error("Série RA : première optimisation en échec.")
+            return
+        if state.to_apply:
+            self.adaptive_process = None
+            await self._apply_adaptive(state, now, complete=True)
+        elif state.running:
+            if self.adaptive_process is None:
+                # Aussi après un redémarrage du moteur pendant la réoptimisation.
+                self.adaptive_process = self.adaptive_launcher(self.optimizer_workers)
+            elif self.adaptive_process.poll() is not None:
+                self.adaptive_process = None
+                await self._apply_adaptive(state, now, complete=False)
+        elif state.due(now):
+            adaptive.begin_run(self.conn, now)
+            adaptive.set_message(self.conn, "Réoptimisation hebdomadaire en cours.", now)
+            self.adaptive_process = self.adaptive_launcher(self.optimizer_workers)
+            log.info("Série RA : réoptimisation hebdomadaire lancée.")
+
+    async def _apply_adaptive(
+        self, state: adaptive.AdaptiveState, now: int, complete: bool
+    ) -> None:
+        """Recharge les simulations RA avec leurs nouveaux réglages : portefeuille, positions
+        et ordres conservés, take profit recalculés. Une RA en production y est re-choisie
+        pour que l'ombre et le réel suivent."""
+        assert state.run_at is not None
+        changed = [
+            r[0]
+            for r in self.conn.execute(
+                f"SELECT id FROM simulations WHERE {adaptive.ALL} AND optimized_at IS NOT NULL"
+            )
+        ]
+        stored = load_simulations(self.conn, f"id IN ({','.join(map(str, changed))})")
+        for sim in stored:
+            current = self.sims.get(sim.id)
+            if current is None:
+                continue
+            self.sim_states.save([current], now)
+            self._add_simulation(sim.id, sim.config)
+            await self.sims[sim.id].resync_take_profits(now)
+        self.sim_states.save([self.sims[s.id] for s in stored if s.id in self.sims], now)
+        choice = production.active_choice(self.conn)
+        followed = ""
+        if choice is not None and choice.sim_id in changed:
+            production.choose(self.conn, choice.sim_id, choice.capital, choice.metric, now)
+            followed = f", production mise à jour ({adaptive.label_of(self.conn, choice.sim_id)})"
+        when = "réoptimisation" if complete else "réoptimisation interrompue"
+        message = f"Série RA : {when} appliquée à {len(changed)} simulations{followed}."
+        adaptive.mark_applied(self.conn, state.run_at, message, now)
+        log.info(message)
 
     def _bh_value(self) -> Decimal | None:
         assert self.ctx is not None
@@ -494,13 +582,14 @@ class Engine:
         self._require(Status.HOLD, "Remettre à zéro")
         if production.read_live(self.conn).status is not production.LiveStatus.OFF:
             raise EngineError("arrêtez d'abord le mode réel (positions réelles en cours).")
-        for process in (self.ideal_process, self.recalibration_process):
+        for process in (self.ideal_process, self.recalibration_process, self.adaptive_process):
             if process is not None:
                 process.kill()
-        self.ideal_process = self.recalibration_process = None
+        self.ideal_process = self.recalibration_process = self.adaptive_process = None
         with transaction(self.conn):
             ideals.delete_all(self.conn)
             recalibration.delete_all(self.conn)
+            adaptive.delete_all(self.conn)
             for table in RESET_TABLES:
                 self.conn.execute(f"DELETE FROM {table}")
         set_status(self.conn, Status.NOT_STARTED, now, started_at=None, basket_json=None)
