@@ -4,8 +4,9 @@ réglages d'indicateurs sont réoptimisés sur les 12 derniers mois (fenêtre gl
 
 Indicatif R2-150 : recalibrage de S-150 (jumelle d'origine) lors de la
 2ᵉ optimisation (la 1ʳᵉ est celle du plan). Les recalibrages tournent à 1 000 € depuis leur
-démarrage, hors tornade, synthèse, top 5 et production ; au plus `MAX_ACTIVE` générations
-tournent en même temps, la plus ancienne est archivée au démarrage d'une nouvelle.
+démarrage, hors tornade, synthèse et top 5, sélectionnables en production après 10 trades ;
+au plus `MAX_ACTIVE` générations tournent en même temps, la plus ancienne est
+archivée au démarrage d'une nouvelle.
 """
 
 from __future__ import annotations

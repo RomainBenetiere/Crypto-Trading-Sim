@@ -742,7 +742,7 @@ def recalibration_section(version: tuple[Any, ...]) -> None:
         "réoptimisés sur les 12 derniers mois (fenêtre glissante coupée 70/30, sélection sur la moyenne des scores "
         "d'apprentissage et de validation). R2-150 est le recalibrage de S-150 lors de la "
         f"2ᵉ optimisation. Au plus {recalibration.MAX_ACTIVE} générations tournent ; hors "
-        "tornade, classements et production."
+        "tornade et classements, sélectionnables en production après 10 trades."
     )
     conn = ro()
     state = recalibration.read_state(conn)
@@ -1230,7 +1230,7 @@ def tab_production() -> None:
         st.warning("Aucun plan de simulations : `python -m mcs.sampling generate`.")
         return
     st.markdown(
-        "#### Choisir parmi les 5 meilleures simulations (et les idéales, les 5 meilleures RA)"
+        "#### Choisir parmi les 5 meilleures simulations (et les idéales, les 5 meilleures RA et R)"
     )
     metric = st.radio(
         "Classer par",
@@ -1263,6 +1263,19 @@ def tab_production() -> None:
         )
         top = pd.concat([top, best])
         ranks += [f"Série RA {i}" for i in range(1, len(best) + 1)]
+    recalibrated = recalibrated_simulations(data_version())
+    if not recalibrated.empty:
+        best = (
+            recalibrated[
+                recalibrated["started_at"].notna()
+                & recalibrated["archived_at"].isna()
+                & (recalibrated["trades"] >= MIN_TRADES_FOR_TORNADO)
+            ]
+            .dropna(subset=[column])
+            .nlargest(5, column)
+        )
+        top = pd.concat([top, best])
+        ranks += [f"Recalibrage {i}" for i in range(1, len(best) + 1)]
     top = top.reset_index(drop=True)
     if top.empty:
         st.info(
