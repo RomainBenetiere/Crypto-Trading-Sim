@@ -62,7 +62,8 @@ def setup(conn: sqlite3.Connection, data):  # type: ignore[no-untyped-def]
 
     def make_engine() -> Engine:
         engine = Engine(conn, FEES, Books(data), clock=clock, data_loader=lambda c, b: data,
-                        optimizer_launcher=lambda w, r: launched.append((w, r)))  # fmt: skip
+                        optimizer_launcher=lambda w, r: launched.append((w, r)),
+                        recalibration_launcher=lambda w: None)  # fmt: skip
         engine.startup()
         return engine
 
@@ -94,7 +95,9 @@ async def test_state_machine(setup) -> None:  # type: ignore[no-untyped-def]
     assert "lancé" in await command(engine, Command.START)
     state = read_state(conn)
     assert state.status is Status.RUNNING and state.basket == MARKETS and state.started_at
-    assert "refusée" in await command(engine, Command.OPTIMIZE)
+    # En marche : « Optimiser » crée une génération de recalibrage (décision 48).
+    assert "génération R2 créée (4 simulations)" in await command(engine, Command.OPTIMIZE)
+    assert "déjà en préparation" in await command(engine, Command.OPTIMIZE)
     assert "refusée" in await command(engine, Command.RESET)  # seulement depuis Hold
     bh = conn.execute(
         "SELECT market, quantity, buy_fee, allocated_eur FROM buy_and_hold"

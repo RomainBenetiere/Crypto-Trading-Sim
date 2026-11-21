@@ -250,7 +250,12 @@ def create_generation(conn: sqlite3.Connection, now: int) -> int:
     if sum(1 for r in records if r.calmar is not None) < 2 * 3:
         raise IdealError("trop peu de simulations ont un ratio de Calmar.")
     generation = (
-        int(conn.execute("SELECT COALESCE(MAX(generation), 0) FROM simulations").fetchone()[0]) + 1
+        int(
+            conn.execute(
+                "SELECT COALESCE(MAX(generation), 0) FROM simulations WHERE kind = 'ideal'"
+            ).fetchone()[0]
+        )
+        + 1
     )
     pair = conn.execute("SELECT MAX(pair_id) FROM simulations").fetchone()[0]
     rows, params = [], []

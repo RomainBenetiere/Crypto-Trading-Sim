@@ -144,26 +144,26 @@ def detail(conn: Any, markets: list[str], version: tuple[Any, ...]) -> None:
         format_func=lambda d: f"{d} j",
         key=f"chart_days_{interval}",
     )
-    ideal = queries.ideal_ids(conn, running_only=True)
-    sims = [None, *range(1, 301), *ideal]
+    extra = queries.running_extra_labels(conn)  # idéales (SO-) et recalibrées (R2-150)
+
+    def name(s: int) -> str:
+        return extra.get(s) or fmt.sim_label(s)
+
+    sims = [None, *range(1, 301), *extra]
     sim_id = cols[3].selectbox(
         "Réglages",
         sims,
         key="chart_sim",
-        format_func=lambda s: (
-            "Valeurs typiques" if s is None else f"Simulation {fmt.sim_label(s, s in ideal)}"
-        ),
+        format_func=lambda s: "Valeurs typiques" if s is None else f"Simulation {name(s)}",
     )
     settings = charts.ChartIndicators()
     if sim_id is not None:
         config = charts.simulation_config(conn, sim_id)
         if config is None:
-            st.warning(f"{fmt.sim_label(sim_id, sim_id in ideal)} n'existe pas dans le plan.")
+            st.warning(f"{name(sim_id)} n'existe pas dans le plan.")
             sim_id = None
         else:
-            settings = charts.indicators_for(
-                config, f"réglages de {fmt.sim_label(sim_id, sim_id in ideal)}"
-            )
+            settings = charts.indicators_for(config, f"réglages de {name(sim_id)}")
     toggles = st.columns(5)
     show = {
         "ema": toggles[0].toggle("EMA", value=True, key="ov_ema"),

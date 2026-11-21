@@ -15,7 +15,7 @@ from mcs.config import JournalMode
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 # Migrations d'une version à la suivante ; `schema.sql` décrit toujours la dernière version.
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -231,6 +231,43 @@ MIGRATIONS: dict[int, str] = {
     -- SO d'hypothèses (décision 47) : configurations issues de l'analyse statistique.
     ALTER TABLE simulations ADD COLUMN hypothesis TEXT;
     """,
+    14: """
+    -- Recalibrages (décision 48) : nouvelle valeur de `kind`, d'où la reconstruction de la
+    -- table (contrainte CHECK). Clés étrangères suspendues par `init_schema` : la suppression
+    -- de l'ancienne table ne doit rien effacer en cascade.
+    CREATE TABLE simulations_v14 (
+        id                INTEGER PRIMARY KEY,
+        pair_id           INTEGER NOT NULL,
+        mode              TEXT    NOT NULL CHECK (mode IN ('typical', 'optimized')),
+        family            TEXT    NOT NULL,
+        config_json       TEXT    NOT NULL,
+        draw_json         TEXT    NOT NULL DEFAULT '{}',
+        seed              INTEGER NOT NULL,
+        train_score       TEXT,
+        validation_score  TEXT,
+        created_at        INTEGER NOT NULL,
+        optimized_at      INTEGER,
+        kind              TEXT    NOT NULL DEFAULT 'plan'
+                          CHECK (kind IN ('plan', 'ideal', 'recalibrated')),
+        objective         TEXT    CHECK (objective IN ('pnl', 'calmar')),
+        generation        INTEGER,
+        started_at        INTEGER,
+        archived_at       INTEGER,
+        bh_start_value    TEXT,
+        hypothesis        TEXT,
+        source_sim_id     INTEGER,
+        UNIQUE (pair_id, mode)
+    );
+    INSERT INTO simulations_v14 (id, pair_id, mode, family, config_json, draw_json, seed,
+        train_score, validation_score, created_at, optimized_at, kind, objective, generation,
+        started_at, archived_at, bh_start_value, hypothesis)
+    SELECT id, pair_id, mode, family, config_json, draw_json, seed, train_score,
+        validation_score, created_at, optimized_at, kind, objective, generation, started_at,
+        archived_at, bh_start_value, hypothesis FROM simulations;
+    DROP TABLE simulations;
+    ALTER TABLE simulations_v14 RENAME TO simulations;
+    ALTER TABLE engine_state ADD COLUMN recalibration_message TEXT;
+    """,
 }
 BUSY_TIMEOUT_MS = 30_000
 NETWORK_FILESYSTEMS = frozenset(
@@ -279,6 +316,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         script = resources.files("mcs.storage").joinpath("schema.sql").read_text(encoding="utf-8")
     else:
         script = "\n".join(MIGRATIONS[v] for v in range(version + 1, SCHEMA_VERSION + 1))
+    # Reconstruction de tables (v14) : sans clés étrangères, une suppression de table
+    # effacerait en cascade les lignes qui la référencent. Pragma sans effet en transaction.
+    conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.executescript(
             f"""
@@ -295,6 +335,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if broken:
+        raise RuntimeError(f"Migration : {len(broken)} références orphelines ({broken[0][0]}).")
 
 
 class transaction:

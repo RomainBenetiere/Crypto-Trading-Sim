@@ -116,6 +116,12 @@ SO d'hypothèses (décision 47), créées en ligne de commande puis optimisées 
 docker compose exec engine python -m mcs.ideal hypotheses --exit "clôture 4 h"
 ```
 
+## Recalibrages
+
+Simulations en marche ou en Hold, le bouton « Optimiser les indicateurs » crée une génération de recalibrage (décision 48) : les 150 jumelles optimisées du plan sont copiées, leurs indicateurs réoptimisés sur l'historique à jour dans un processus séparé (1 à 2 h avec `OPTIMIZER_WORKERS=4`, journal `logs/optimizer`), puis elles démarrent à 1 000 € sous l'indicatif R2-150, R3-150… Les 300 continuent sans interruption. Au plus 3 générations tournent ; la plus ancienne est archivée au démarrage d'une nouvelle. Une optimisation interrompue (redémarrage du moteur) reprend là où elle s'était arrêtée. En ligne de commande : `docker compose exec engine python -m mcs.control optimize`.
+
+La mise à jour vers le schéma v14 reconstruit la table `simulations` au premier démarrage du moteur (quelques secondes) ; sauvegarder la base avant le déploiement.
+
 ## 7. Mode production : ombre
 
 L'onglet « Production » du dashboard permet de choisir un scénario parmi les 5 meilleures simulations, puis de démarrer le mode ombre : le scénario tourne sur son propre portefeuille (300 € par défaut), ordres calculés au carnet réel mais **jamais envoyés**. L'ombre ne tourne que lorsque les simulations sont en marche.

@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+import mcs.recalibration as recalibration
 from dashboard import fmt
 from mcs.live.state import Command, period_totals, request_command
 from mcs.metrics import METRICS, OPTION_LABELS, VARIABLE_LABELS, calmar_ratio
@@ -51,6 +52,7 @@ class EngineInfo:
     pending_command: str | None
     last_command: str | None
     last_result: str | None
+    recalibration_pending: bool = False  # génération R en préparation (décision 48)
 
 
 def engine_info(conn: sqlite3.Connection, now: int | None = None) -> EngineInfo:
@@ -67,6 +69,9 @@ def engine_info(conn: sqlite3.Connection, now: int | None = None) -> EngineInfo:
     last = conn.execute(
         "SELECT command, result FROM commands WHERE processed_at IS NOT NULL ORDER BY id DESC LIMIT 1"
     ).fetchone()
+    recalibrating = conn.execute(
+        f"SELECT COUNT(*) FROM simulations WHERE {recalibration.PENDING}"
+    ).fetchone()[0]
     return EngineInfo(
         status=row["status"],
         optimization_status=row["optimization_status"],
@@ -80,6 +85,7 @@ def engine_info(conn: sqlite3.Connection, now: int | None = None) -> EngineInfo:
         pending_command=pending[0] if pending else None,
         last_command=last[0] if last else None,
         last_result=last[1] if last else None,
+        recalibration_pending=recalibrating > 0,
     )
 
 
@@ -94,9 +100,11 @@ def allowed_commands(info: EngineInfo) -> list[Command]:
         if info.optimization_status == "DONE":
             commands.append(Command.START)
         return commands
+    # En marche ou en Hold, « Optimiser » crée une génération de recalibrage (décision 48).
+    recalibrate = [] if info.recalibration_pending else [Command.OPTIMIZE]
     if info.status == "RUNNING":
-        return [Command.STOP]
-    return [Command.RESUME, Command.RESET]
+        return [Command.STOP, *recalibrate]
+    return [Command.RESUME, Command.RESET, *recalibrate]
 
 
 def send_command(conn: sqlite3.Connection, command: Command) -> int:
@@ -124,7 +132,8 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
     rows = []
     for r in conn.execute(
         """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, s.objective, s.generation,
-                  s.started_at, s.archived_at, s.hypothesis, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
+                  s.started_at, s.archived_at, s.hypothesis, s.source_sim_id, s.train_score,
+                  s.validation_score, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
                   m.closed_trades, m.win_rate, m.total_fees, m.bh_gap_eur, m.open_positions
            FROM simulations s LEFT JOIN metrics m ON m.sim_id = s.id
            WHERE s.kind = ? ORDER BY s.id""",
@@ -136,7 +145,7 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
         rows.append(
             {
                 "sim_id": r["id"],
-                "Simulation": fmt.sim_label(r["id"], ideal=kind == "ideal"),
+                "Simulation": _label(kind, r["id"], r["generation"], r["source_sim_id"]),
                 "Paire": f"P-{r['pair_id']:03d}",
                 "Calibrage": MODE_LABELS[r["mode"]],
                 "Famille": FAMILY_LABELS.get(r["family"], r["family"]),
@@ -145,6 +154,9 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
                 "started_at": r["started_at"],
                 "archived_at": r["archived_at"],
                 "hypothesis": r["hypothesis"],
+                "source_sim_id": r["source_sim_id"],
+                "train_score": num("train_score"),
+                "validation_score": num("validation_score"),
                 "Filtre 1 j": _option(draw, "trend_enabled"),
                 "Type de filtre": _option(draw, "trend_type"),
                 "Stop": _option(draw, "stop_type"),
@@ -186,8 +198,58 @@ def ideal_ids(conn: sqlite3.Connection, running_only: bool = False) -> list[int]
     return [r[0] for r in conn.execute(f"SELECT id FROM simulations WHERE {where} ORDER BY id")]
 
 
+def _label(kind: str, sim_id: int, generation: int | None, source: int | None) -> str:
+    if kind == "recalibrated" and generation is not None and source is not None:
+        return recalibration.label(generation, source)
+    return fmt.sim_label(sim_id, ideal=kind == "ideal")
+
+
 def label(conn: sqlite3.Connection, sim_id: int) -> str:
-    return fmt.sim_label(sim_id, ideal=sim_id in ideal_ids(conn))
+    """« S-042 », « SO-301 » ou « R2-150 » selon la nature de la simulation."""
+    row = conn.execute(
+        "SELECT kind, generation, source_sim_id FROM simulations WHERE id = ?", (sim_id,)
+    ).fetchone()
+    if row is None:
+        return fmt.sim_label(sim_id)
+    return _label(row["kind"], sim_id, row["generation"], row["source_sim_id"])
+
+
+def running_extra_labels(conn: sqlite3.Connection) -> dict[int, str]:
+    """Simulations idéales et recalibrées en cours, avec leur libellé (onglet Graphiques)."""
+    return {
+        r["id"]: _label(r["kind"], r["id"], r["generation"], r["source_sim_id"])
+        for r in conn.execute(
+            "SELECT id, kind, generation, source_sim_id FROM simulations WHERE kind != 'plan' "
+            "AND started_at IS NOT NULL AND archived_at IS NULL ORDER BY id"
+        )
+    }
+
+
+def period_pnl(
+    conn: sqlite3.Connection, sim_ids: list[int], since: int, until: int | None = None
+) -> dict[int, float]:
+    """P&L de chaque simulation entre la première valeur horaire après `since` et la dernière
+    avant `until` (ou la plus récente), ramené à 1 000 € de départ."""
+    if not sim_ids:
+        return {}
+    marks = ",".join("?" * len(sim_ids))
+    upper = until if until is not None else 2**62
+    rows = conn.execute(
+        f"""SELECT v.sim_id, v.total_value FROM portfolio_values v
+            JOIN (SELECT sim_id, MIN(ts) AS first, MAX(ts) AS last FROM portfolio_values
+                  WHERE sim_id IN ({marks}) AND ts >= ? AND ts <= ? GROUP BY sim_id) b
+              ON b.sim_id = v.sim_id AND v.ts IN (b.first, b.last)
+            ORDER BY v.sim_id, v.ts""",
+        (*sim_ids, since, upper),
+    ).fetchall()
+    values: dict[int, list[float]] = {}
+    for sim_id, value in rows:
+        values.setdefault(sim_id, []).append(float(value))
+    return {
+        sim_id: 1000 * (v[-1] / v[0] - 1)
+        for sim_id, v in values.items()
+        if len(v) == 2 and v[0] > 0
+    }
 
 
 def ideal_bh_start(conn: sqlite3.Connection, sim_id: int) -> Decimal | None:

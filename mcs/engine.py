@@ -36,6 +36,7 @@ from typing import Any
 import httpx
 
 import mcs.ideal as ideals
+import mcs.recalibration as recalibration
 from mcs import production
 from mcs.backtest import Dataset, load_dataset
 from mcs.bitvavo.account import BitvavoAccount
@@ -117,6 +118,12 @@ def launch_ideal_optimizer(workers: int) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command)
 
 
+def launch_recalibration_optimizer(workers: int) -> subprocess.Popen[bytes]:
+    """Optimisation du recalibrage en attente (décision 48), dans un processus séparé."""
+    command = [sys.executable, "-m", "mcs.optimizer", "recalibrate", "--workers", str(workers)]
+    return subprocess.Popen(command)
+
+
 class Engine:
     def __init__(
         self,
@@ -130,6 +137,7 @@ class Engine:
         optimizer_workers: int = 4,
         optimizer_launcher: Callable[[int, bool], Any] = launch_optimizer,
         ideal_launcher: Callable[[int], Any] = launch_ideal_optimizer,
+        recalibration_launcher: Callable[[int], Any] = launch_recalibration_optimizer,
         trading: BitvavoTrading | None = None,
         max_capital: Decimal | None = None,
     ) -> None:
@@ -140,8 +148,11 @@ class Engine:
         self.optimizer_process: Any = None
         self.ideal_launcher = ideal_launcher
         self.ideal_process: Any = None
+        self.recalibration_launcher = recalibration_launcher
+        self.recalibration_process: Any = None
         self.basket: list[str] = []
-        # Valeur du buy & hold au démarrage de chaque simulation idéale en cours.
+        # Valeur du buy & hold au démarrage de chaque simulation idéale ou recalibrée en cours
+        # (écart au buy & hold sur sa propre période).
         self.ideal_bh: dict[int, Decimal | None] = {}
         self.positions = SqlitePositionStore(conn)
         self.sim_states = SimStateStore(conn)
@@ -213,7 +224,7 @@ class Engine:
         self.ideal_bh = {
             r["id"]: None if r["bh_start_value"] is None else Decimal(r["bh_start_value"])
             for r in self.conn.execute(
-                "SELECT id, bh_start_value FROM simulations WHERE kind = 'ideal' "
+                "SELECT id, bh_start_value FROM simulations WHERE kind != 'plan' "
                 "AND started_at IS NOT NULL AND archived_at IS NULL"
             )
         }
@@ -246,6 +257,7 @@ class Engine:
         async with self.lock:
             processed = await self._process_next_command()
             await self.sync_ideals()
+            await self.sync_recalibration()
             await self.sync_shadow()
             await self.sync_live()
             return processed
@@ -295,11 +307,57 @@ class Engine:
     async def _start_ideals(self, generation: int | None, now: int) -> None:
         """Archive la génération en cours (ordres en attente annulés, positions et métriques
         figées) et démarre la nouvelle, à 1 000 € chacune."""
-        assert self.broker is not None and self.ctx is not None
+        bh_value = self._bh_value()
+        archived, started = ideals.start_generation(self.conn, now, bh_value)
+        await self._activate(archived, started, bh_value, now)
+        what = "SO d'hypothèses" if generation is None else f"Génération {generation}"
+        ideals.finish_request(self.conn, f"{what} démarrée ({len(started)} simulations).", now)
+        log.info("Simulations idéales : %s démarrée.", what)
+
+    # --- Recalibrages (décision 48) ---------------------------------------------------------
+
+    async def sync_recalibration(self) -> None:
+        """Suit l'optimisation de la génération en attente, puis la démarre."""
+        state = recalibration.read_state(self.conn)
+        if state.pending is None or self.status is Status.NOT_STARTED or self.broker is None:
+            return
+        now = self.clock()
+        name = f"Génération R{state.pending}"
+        if recalibration.pending_ready(self.conn):
+            self.recalibration_process = None
+            bh_value = self._bh_value()
+            archived, started = recalibration.start_generation(self.conn, now, bh_value)
+            await self._activate(archived, started, bh_value, now)
+            message = f"{name} démarrée ({len(started)} simulations)"
+            if archived:
+                message += f", {len(archived)} simulations plus anciennes archivées"
+            recalibration.set_message(self.conn, message + ".", now)
+            log.info("Recalibrage : %s.", message)
+        elif self.recalibration_process is None:
+            # Aussi après un redémarrage du moteur pendant l'optimisation.
+            self.recalibration_process = self.recalibration_launcher(self.optimizer_workers)
+        elif self.recalibration_process.poll() is not None:
+            self.recalibration_process = None
+            recalibration.discard_pending(self.conn)
+            recalibration.set_message(
+                self.conn,
+                f"{name} abandonnée : échec de l'optimisation (voir logs/optimizer).",
+                now,
+            )
+            log.error("Recalibrage : optimisation de la génération R%d en échec.", state.pending)
+
+    def _bh_value(self) -> Decimal | None:
+        assert self.ctx is not None
         markets = list(self.ctx.data.markets)
         prices = {m: p for m in markets if (p := self.ctx.last_price(m)) is not None}
-        bh_value = buy_and_hold_value(load_buy_and_hold(self.conn), prices, self.fees.taker)
-        archived, started = ideals.start_generation(self.conn, now, bh_value)
+        return buy_and_hold_value(load_buy_and_hold(self.conn), prices, self.fees.taker)
+
+    async def _activate(
+        self, archived: list[int], started: list[int], bh_value: Decimal | None, now: int
+    ) -> None:
+        """Archivées : ordres en attente annulés, positions et métriques figées. Démarrées :
+        chargées à 1 000 € chacune."""
+        assert self.broker is not None
         for sim_id in archived:
             sim = self.sims.pop(sim_id, None)
             if sim is None:
@@ -312,9 +370,6 @@ class Engine:
             self._add_simulation(stored.id, stored.config)
             self.ideal_bh[stored.id] = bh_value
         self.sim_states.save([self.sims[i] for i in started], now)
-        what = "SO d'hypothèses" if generation is None else f"Génération {generation}"
-        ideals.finish_request(self.conn, f"{what} démarrée ({len(started)} simulations).", now)
-        log.info("Simulations idéales : %s démarrée.", what)
 
     async def sync_shadow(self) -> None:
         if production.read_state(self.conn).reset_requested_at is not None:
@@ -359,7 +414,8 @@ class Engine:
             raise EngineError(f"« {action} » impossible à l'état {self.status.value}.")
 
     async def _optimize(self, now: int) -> str:
-        self._require(Status.NOT_STARTED, "Optimiser")
+        if self.status is not Status.NOT_STARTED:
+            return self._recalibrate(now)
         optimization = read_state(self.conn).optimization_status
         if optimization == "RUNNING":
             raise EngineError("une optimisation est déjà en cours.")
@@ -369,6 +425,26 @@ class Engine:
         self.optimizer_process = self.optimizer_launcher(self.optimizer_workers, recalibrate)
         what = "recalibrage de toutes les jumelles" if recalibrate else "optimisation"
         return f"{what} lancée ({self.optimizer_workers} cœurs)"
+
+    def _recalibrate(self, now: int) -> str:
+        """Simulations en marche ou en Hold : nouvelle génération de recalibrage (décision 48)."""
+        try:
+            generation = recalibration.create_generation(self.conn, now)
+        except recalibration.RecalibrationError as exc:
+            raise EngineError(str(exc)) from None
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM simulations WHERE kind = 'recalibrated' AND generation = ?",
+            (generation,),
+        ).fetchone()[0]
+        message = (
+            f"génération R{generation} créée ({count} simulations) : optimisation des "
+            f"indicateurs ({self.optimizer_workers} cœurs), puis démarrage"
+        )
+        recalibration.set_message(
+            self.conn, f"Génération R{generation} : optimisation en cours.", now
+        )
+        log.info("Recalibrage : %s.", message)
+        return message
 
     async def _start(self, now: int) -> str:
         self._require(Status.NOT_STARTED, "Lancer")
@@ -418,11 +494,13 @@ class Engine:
         self._require(Status.HOLD, "Remettre à zéro")
         if production.read_live(self.conn).status is not production.LiveStatus.OFF:
             raise EngineError("arrêtez d'abord le mode réel (positions réelles en cours).")
-        if self.ideal_process is not None:
-            self.ideal_process.kill()
-            self.ideal_process = None
+        for process in (self.ideal_process, self.recalibration_process):
+            if process is not None:
+                process.kill()
+        self.ideal_process = self.recalibration_process = None
         with transaction(self.conn):
             ideals.delete_all(self.conn)
+            recalibration.delete_all(self.conn)
             for table in RESET_TABLES:
                 self.conn.execute(f"DELETE FROM {table}")
         set_status(self.conn, Status.NOT_STARTED, now, started_at=None, basket_json=None)

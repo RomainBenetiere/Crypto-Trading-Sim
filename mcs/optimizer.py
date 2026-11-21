@@ -2,12 +2,17 @@
 
     python -m mcs.optimizer run [--workers N] [--only SIM_ID ...] [--trials 40] [--force]
     python -m mcs.optimizer ideal [--workers N]   # génération idéale en attente (moteur)
+    python -m mcs.optimizer recalibrate [--workers N]   # recalibrage en attente (moteur)
 
 Pour chaque simulation `optimized` : 40 jeux de valeurs d'indicateurs (valeurs typiques + 39
 tirés par hypercube latin dans les plages du §4) sont évalués par backtest sur les 70 % les
 plus anciens de l'historique ; le meilleur selon rendement / drawdown est retenu puis évalué
 sur les 30 % suivants (score de validation, enregistré sans écarter la simulation). Seules
 les valeurs des indicateurs et du filtre de fond changent.
+
+Recalibrages (décision 48) : chaque essai est aussi évalué sur les 30 % de validation et le
+meilleur score moyen (apprentissage + validation) / 2 est retenu ; la validation n'est alors
+plus un contrôle indépendant.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from mcs.indicators.signals import (
     VolumeConfirmation,
 )
 from mcs.logging_setup import configure_logging
+from mcs.recalibration import PENDING as PENDING_RECALIBRATION
 from mcs.sampling import (
     PENDING_IDEAL,
     IndicatorValues,
@@ -57,6 +63,10 @@ from mcs.strategy.serialize import config_to_json
 log = logging.getLogger("mcs.optimizer")
 
 TRIALS = 40
+# Critère de sélection : apprentissage seul (plan, idéales) ou moyenne apprentissage /
+# validation (recalibrages).
+TRAIN = "train"
+MEAN = "mean"
 
 
 class OptimizationError(RuntimeError):
@@ -193,20 +203,28 @@ def optimize(
     fees: FeeSchedule,
     trials: int = TRIALS,
     cache: dict[tuple[Any, ...], Any] | None = None,
+    select: str = TRAIN,
 ) -> OptimizationResult:
     started = time.perf_counter()
     start, cut, end = data.split()
     cache = cache if cache is not None else {}
-    best: tuple[float, StrategyConfig] | None = None
+    best: tuple[float, float, float | None, StrategyConfig] | None = None
     for values in candidate_values(sim.draw, sim.seed, trials):
         config = build_config(sim.draw, indicators_from(sim.draw, values))
-        score = run_backtest(config, data, start, cut, fees, cache).score
-        if best is None or score > best[0]:
-            best = (score, config)
+        train = run_backtest(config, data, start, cut, fees, cache).score
+        validation: float | None = None
+        rank = train
+        if select == MEAN:
+            validation = run_backtest(config, data, cut, end, fees, cache).score
+            rank = (train + validation) / 2
+        if best is None or rank > best[0]:
+            best = (rank, train, validation, config)
     assert best is not None
-    validation = run_backtest(best[1], data, cut, end, fees, cache).score
+    _, train, validation, config = best
+    if validation is None:
+        validation = run_backtest(config, data, cut, end, fees, cache).score
     return OptimizationResult(
-        sim.id, best[1], best[0], validation, trials, time.perf_counter() - started
+        sim.id, config, train, validation, trials, time.perf_counter() - started
     )
 
 
@@ -220,8 +238,8 @@ def _init_worker(data: Dataset, fees: FeeSchedule) -> None:
     _WORKER.update(data=data, fees=fees, cache={})
 
 
-def _worker_optimize(sim: StoredSimulation, trials: int) -> OptimizationResult:
-    return optimize(sim, _WORKER["data"], _WORKER["fees"], trials, _WORKER["cache"])
+def _worker_optimize(sim: StoredSimulation, trials: int, select: str) -> OptimizationResult:
+    return optimize(sim, _WORKER["data"], _WORKER["fees"], trials, _WORKER["cache"], select)
 
 
 def save_result(
@@ -332,6 +350,22 @@ def run_ideal(
     return _optimize_all(conn, sims, data or load_dataset(conn), fees, workers, trials)
 
 
+def run_recalibration(
+    conn: sqlite3.Connection,
+    fees: FeeSchedule,
+    workers: int = 1,
+    trials: int = TRIALS,
+    data: Dataset | None = None,
+) -> list[OptimizationResult]:
+    """Génération de recalibrage en attente (décision 48), lancée par le moteur en marche ou
+    en Hold ; sélection sur la moyenne apprentissage / validation. Reprend après interruption."""
+    where = f"{PENDING_RECALIBRATION} AND optimized_at IS NULL"
+    sims = load_simulations(conn, where)
+    if not sims:
+        raise OptimizationError("Aucun recalibrage en attente d'optimisation.")
+    return _optimize_all(conn, sims, data or load_dataset(conn), fees, workers, trials, MEAN)
+
+
 def _optimize_all(
     conn: sqlite3.Connection,
     sims: Sequence[StoredSimulation],
@@ -339,19 +373,20 @@ def _optimize_all(
     fees: FeeSchedule,
     workers: int,
     trials: int,
+    select: str = TRAIN,
 ) -> list[OptimizationResult]:
     by_id = {s.id: s for s in sims}
     results: list[OptimizationResult] = []
     if workers <= 1:
         cache: dict[tuple[Any, ...], Any] = {}
         for sim in sims:
-            result = optimize(sim, data, fees, trials, cache)
+            result = optimize(sim, data, fees, trials, cache, select)
             save_result(conn, result, sim)
             results.append(result)
             _log_progress(result, len(results), len(sims))
     else:
         with ProcessPoolExecutor(workers, initializer=_init_worker, initargs=(data, fees)) as pool:
-            futures = [pool.submit(_worker_optimize, sim, trials) for sim in sims]
+            futures = [pool.submit(_worker_optimize, sim, trials, select) for sim in sims]
             for future in as_completed(futures):
                 result = future.result()
                 save_result(conn, result, by_id[result.sim_id])
@@ -378,7 +413,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("command", choices=("run", "ideal"))
+    parser.add_argument("command", choices=("run", "ideal", "recalibrate"))
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--trials", type=int, default=TRIALS)
     parser.add_argument("--only", type=int, nargs="*", help="identifiants de simulations")
@@ -392,6 +427,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         if args.command == "ideal":
             results = run_ideal(conn, fees, args.workers, args.trials)
+        elif args.command == "recalibrate":
+            results = run_recalibration(conn, fees, args.workers, args.trials)
         else:
             results = run(
                 conn, fees, args.workers, args.trials, args.only, args.force, recalibrate=args.all

@@ -8,7 +8,7 @@ import pytest
 
 from dashboard import queries
 from mcs import ideal as ideals
-from mcs import production
+from mcs import production, recalibration
 from mcs.broker.fees import FeeSchedule
 from mcs.config import JournalMode
 from mcs.engine import Engine
@@ -64,8 +64,14 @@ def test_allowed_commands_follow_state_machine(conn: sqlite3.Connection) -> None
     conn.execute("UPDATE engine_state SET optimization_status = 'RUNNING'")
     assert queries.allowed_commands(queries.engine_info(conn)) == []
     conn.execute("UPDATE engine_state SET status = 'RUNNING', optimization_status = 'DONE'")
-    assert queries.allowed_commands(queries.engine_info(conn)) == [Command.STOP]
+    assert queries.allowed_commands(queries.engine_info(conn)) == [Command.STOP, Command.OPTIMIZE]
     conn.execute("UPDATE engine_state SET status = 'HOLD'")
+    assert queries.allowed_commands(queries.engine_info(conn)) == [
+        Command.RESUME,
+        Command.RESET,
+        Command.OPTIMIZE,
+    ]
+    recalibration.create_generation(conn, 1)  # génération en préparation : pas de 2ᵉ demande
     assert queries.allowed_commands(queries.engine_info(conn)) == [Command.RESUME, Command.RESET]
     queries.send_command(conn, Command.RESUME)
     info = queries.engine_info(conn)
@@ -341,3 +347,41 @@ async def test_app_ideal_section_and_production_choice(app_db: Path) -> None:
     assert len(shown) == 8  # tableaux et tornade : plan seulement
     ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
     assert "Idéale P&L" in ranks and "Idéale Ratio de Calmar" in ranks  # onglet Production
+
+
+async def test_app_recalibration_section(app_db: Path) -> None:
+    conn = connect(app_db, JournalMode.WAL)
+    prepare(conn)
+    engine = await run_live(conn, bars=2)
+    engine.recalibration_launcher = lambda workers: None  # optimisation simulée ci-dessous
+    request_command(conn, Command.OPTIMIZE, engine.clock())
+    await engine.process_commands()
+    conn.execute(
+        "UPDATE simulations SET optimized_at = 1, train_score = '1.5', validation_score = '-0.5' "
+        "WHERE kind = 'recalibrated'"
+    )
+    await engine.process_commands()
+    assert recalibration.read_state(conn).active == (2,)
+    clock = engine.clock
+    for _ in range(4):
+        clock.now += HOUR  # type: ignore[attr-defined]
+        await engine.on_tick(clock())
+    conn.close()
+
+    at = run_app()
+    assert not at.exception
+    assert any(s.value == "Recalibrages" for s in at.subheader)
+    generations = [v for df in at.dataframe for v in df.value.get("Génération", [])]
+    assert "R2" in generations
+    labels = [v for df in at.dataframe for v in df.value.get("Simulation", [])]
+    assert "R2-002" in labels and "R2-008" in labels
+    origins = [v for df in at.dataframe for v in df.value.get("Origine", [])]
+    assert "S-002" in origins
+    assert any("Validation" in c.value for c in at.caption)
+    ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
+    assert not any(str(r).startswith("R2") for r in ranks)  # hors production
+    shown = queries.simulations_table(connect(app_db, JournalMode.WAL))
+    assert len(shown) == 8  # tableaux et tornade : plan seulement
+    # Bouton « Optimiser » en marche : confirmation, puis commande.
+    at.button(key="btn_optimize").click().run()
+    assert any("génération de recalibrage" in w.value for w in at.warning)

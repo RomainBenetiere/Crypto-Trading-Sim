@@ -25,6 +25,7 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 import mcs.ideal as ideals  # noqa: E402
+import mcs.recalibration as recalibration  # noqa: E402
 from dashboard import chart_tab, fmt, queries  # noqa: E402
 from mcs import production  # noqa: E402
 from mcs.config import Settings, load_settings  # noqa: E402
@@ -107,6 +108,11 @@ def ideal_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
+def recalibrated_simulations(version: tuple[Any, ...]) -> pd.DataFrame:
+    return queries.simulations_table(ro(), kind="recalibrated")
+
+
+@st.cache_data(show_spinner=False)
 def analysis(version: tuple[Any, ...], metric: str) -> tuple[Any, Any, list[Any]]:
     """Synthèse en P&L (buy & hold, trades), synthèse et tornade dans la métrique choisie."""
     conn = ro()
@@ -184,6 +190,14 @@ def buttons(info: queries.EngineInfo) -> None:
             Command.OPTIMIZE: "L'optimisation est déjà faite : toutes les jumelles optimisées "
             "seront recalibrées (environ 15 minutes).",
         }[confirming]
+        if confirming is Command.OPTIMIZE and info.status != "NOT_STARTED":
+            message = (
+                "Une nouvelle génération de recalibrage sera créée : les jumelles optimisées du "
+                "plan sont copiées, leurs indicateurs réoptimisés sur l'historique à jour "
+                "(1 à 2 h, sans arrêter les simulations), puis elles démarrent à 1 000 €. "
+                f"Au-delà de {recalibration.MAX_ACTIVE} générations actives, la plus ancienne "
+                "est archivée."
+            )
         st.warning(message)
         left, right = st.columns(2)
         if left.button("Confirmer", key="btn_confirm", type="primary"):
@@ -197,7 +211,8 @@ def buttons(info: queries.EngineInfo) -> None:
     row = st.columns([1] * max(len(allowed), 1) + [3])
     for col, command in zip(row, allowed, strict=False):
         needs_confirm = command is Command.RESET or (
-            command is Command.OPTIMIZE and info.optimization_status == "DONE"
+            command is Command.OPTIMIZE
+            and (info.optimization_status == "DONE" or info.status != "NOT_STARTED")
         )
         kind: Literal["primary", "secondary"] = (
             "primary" if command in (Command.START, Command.RESUME) else "secondary"
@@ -710,6 +725,176 @@ def ideal_comparison(
     )
 
 
+# --- Recalibrages (décision 48) ------------------------------------------------------------
+
+
+def recalibration_section(version: tuple[Any, ...]) -> None:
+    st.subheader("Recalibrages")
+    st.caption(
+        "Chaque appui sur « Optimiser les indicateurs », simulations en marche ou en Hold, crée "
+        "une génération : les jumelles optimisées du plan, mêmes configurations, indicateurs "
+        "réoptimisés sur l'historique à jour (sélection sur la moyenne des scores "
+        "d'apprentissage et de validation). R2-150 est le recalibrage de S-150 lors de la "
+        f"2ᵉ optimisation. Au plus {recalibration.MAX_ACTIVE} générations tournent ; hors "
+        "tornade, classements et production."
+    )
+    conn = ro()
+    state = recalibration.read_state(conn)
+    if state.pending is not None:
+        st.info(
+            f"Génération R{state.pending} en préparation : optimisation des indicateurs "
+            "(1 à 2 h), puis démarrage."
+        )
+    if state.message:
+        st.caption(f"Dernier événement : {state.message}")
+    table = recalibrated_simulations(version)
+    if not table.empty:
+        table = table[table["started_at"].notna()]
+    if table.empty:
+        if state.pending is None:
+            st.markdown("Aucun recalibrage pour l'instant.")
+        return
+    generations = recalibration_generations(conn, table)
+    st.dataframe(generations.drop(columns=["generation"]), hide_index=True, width="stretch")
+    st.caption(
+        "Écart : P&L du recalibrage moins P&L de sa jumelle d'origine (S-) sur la même période, "
+        "médiane des configurations ; « Meilleures » : part des recalibrages au-dessus de leur "
+        "origine. Validation : score sur les 30 % récents de l'historique, qui a servi à la "
+        "sélection (ce n'est plus un contrôle indépendant)."
+    )
+    chosen = st.selectbox(
+        "Génération",
+        list(generations["generation"]),
+        format_func=lambda g: f"R{g}",
+        key="recal_generation",
+    )
+    recalibration_detail(conn, table[table["generation"] == chosen])
+
+
+def _missing(value: Any) -> bool:
+    return value is None or bool(pd.isna(value))
+
+
+def _eur(value: Any) -> str:
+    return "—" if _missing(value) else fmt.signed_eur(float(value))
+
+
+def _score(value: Any) -> str:
+    return "—" if _missing(value) else fmt.number(float(value), 2)
+
+
+def _generation_window(gen: pd.DataFrame) -> tuple[int, int | None]:
+    archived = gen["archived_at"].dropna()
+    return int(gen["started_at"].min()), int(archived.max()) if not archived.empty else None
+
+
+def _period_gaps(conn: Any, gen: pd.DataFrame) -> pd.DataFrame:
+    """P&L de chaque recalibrage et de sa jumelle d'origine sur la même période."""
+    start, end = _generation_window(gen)
+    sources = [int(s) for s in gen["source_sim_id"]]
+    own = queries.period_pnl(conn, [int(i) for i in gen["sim_id"]], start, end)
+    origin = queries.period_pnl(conn, sources, start, end)
+    frame = gen[["sim_id", "source_sim_id"]].copy()
+    frame["pnl"] = [own.get(int(i)) for i in gen["sim_id"]]
+    frame["origin"] = [origin.get(s) for s in sources]
+    frame["gap"] = frame["pnl"] - frame["origin"]
+    return frame
+
+
+def recalibration_generations(conn: Any, table: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for generation, gen in sorted(table.groupby("generation"), key=lambda g: -int(g[0])):
+        start, end = _generation_window(gen)
+        gaps = _period_gaps(conn, gen)
+        pnl, gap = gaps["pnl"].dropna(), gaps["gap"].dropna()
+        rows.append(
+            {
+                "generation": int(generation),
+                "Génération": f"R{int(generation)}",
+                "Statut": "En cours" if end is None else "Archivée",
+                "Période": f"{fmt.timestamp(start, with_time=False)} → "
+                + ("aujourd'hui" if end is None else fmt.timestamp(end, with_time=False)),
+                "Simulations": len(gen),
+                "P&L médian": fmt.signed_eur(pnl.median()) if not pnl.empty else "—",
+                "Positives": fmt.share(float((pnl > 0).mean())) if not pnl.empty else "—",
+                "Écart médian vs origine": fmt.signed_eur(gap.median()) if not gap.empty else "—",
+                "Meilleures que l'origine": fmt.share(float((gap > 0).mean()))
+                if not gap.empty
+                else "—",
+                "Apprentissage médian": _score(gen["train_score"].median()),
+                "Validation médiane": _score(gen["validation_score"].median()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def recalibration_detail(conn: Any, gen: pd.DataFrame) -> None:
+    """Courbes médianes ramenées à 1 000 € : recalibrages, jumelles d'origine, jumelles
+    typiques du plan et buy & hold, sur la période de la génération."""
+    start, end = _generation_window(gen)
+    generation = int(gen["generation"].iloc[0])
+    sources = [int(s) for s in gen["source_sim_id"]]
+    fig = go.Figure()
+    own = queries.value_series(conn, [int(i) for i in gen["sim_id"]])
+    window = queries.window_values(conn, start)
+    if end is not None:
+        own = own[own["ts"] <= end]
+        window = window[window["ts"] <= end]
+    curves = [
+        (f"Recalibrages R{generation} (médiane)", own, {"color": PRIMARY, "width": 3}),
+        (
+            "Jumelles optimisées d'origine (médiane)",
+            window[window["sim_id"].isin(sources)],
+            {"color": TOP_COLORS[1], "width": 2},
+        ),
+        (
+            "Jumelles typiques du plan (médiane)",
+            window[window["sim_id"].isin([s - 1 for s in sources])],
+            {"color": MUTED, "width": 2},
+        ),
+    ]
+    for name, frame, line in curves:
+        if frame.empty:
+            continue
+        median = frame.groupby("ts")["value"].median()
+        fig.add_scatter(
+            x=[paris(t) for t in median.index], y=median.tolist(), mode="lines", name=name,
+            line=line,
+        )  # fmt: skip
+    start_value = queries.ideal_bh_start(conn, int(gen["sim_id"].iloc[0]))
+    lines = load_buy_and_hold(conn)
+    if lines and start_value:
+        bh = buy_and_hold_series(conn, lines, settings().fee_taker, start, end or now_ms())
+        fig.add_scatter(
+            x=[paris(t) for t, _ in bh], y=[float(1000 * v / start_value) for _, v in bh],
+            mode="lines", name="Buy & hold", line={"color": BH_COLOR, "dash": "dash"},
+        )  # fmt: skip
+    fig.update_layout(
+        separators=", ",
+        height=340,
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        yaxis_title="€ (base 1 000 au démarrage)",
+        legend={"orientation": "h", "y": -0.15},
+        hovermode="x unified",
+    )
+    fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
+    st.plotly_chart(fig, width="stretch", key=f"recal_chart_{generation}")
+    gaps = _period_gaps(conn, gen).set_index("sim_id")
+    shown = metrics_columns(gen).drop(columns=["Calibrage"])
+    shown.insert(1, "Origine", [fmt.sim_label(int(s)) for s in gen["source_sim_id"]])
+    shown.insert(
+        3,
+        "P&L origine (même période)",
+        [_eur(gaps.at[i, "origin"]) for i in gen["sim_id"]],
+    )
+    shown.insert(4, "Écart", [_eur(gaps.at[i, "gap"]) for i in gen["sim_id"]])
+    shown["Apprentissage"] = gen["train_score"].map(_score).to_numpy()
+    shown["Validation"] = gen["validation_score"].map(_score).to_numpy()
+    order = gaps.loc[gen["sim_id"], "gap"].fillna(float("-inf")).to_numpy().argsort()[::-1]
+    with st.expander(f"Détail des {len(gen)} simulations R{generation}"):
+        st.dataframe(shown.iloc[order], hide_index=True, width="stretch")
+
+
 def buy_and_hold_table() -> None:
     st.subheader("Buy & hold à poids égaux")
     conn = ro()
@@ -820,6 +1005,7 @@ def tab_follow_up() -> None:
             tornado_chart(rows, ranked.pnl_mean, metric)
         top5(table, metric)
         ideal_section(version, table, metric)
+        recalibration_section(version)
         buy_and_hold_table()
     all_simulations(table)
 
