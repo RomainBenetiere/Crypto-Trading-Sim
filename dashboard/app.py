@@ -193,8 +193,8 @@ def buttons(info: queries.EngineInfo) -> None:
         if confirming is Command.OPTIMIZE and info.status != "NOT_STARTED":
             message = (
                 "Une nouvelle génération de recalibrage sera créée : les jumelles optimisées du "
-                "plan sont copiées, leurs indicateurs réoptimisés sur l'historique à jour "
-                "(1 à 2 h, sans arrêter les simulations), puis elles démarrent à 1 000 €. "
+                "plan sont copiées, leurs indicateurs réoptimisés sur les 12 derniers mois "
+                "(sans arrêter les simulations), puis elles démarrent à 1 000 €. "
                 f"Au-delà de {recalibration.MAX_ACTIVE} générations actives, la plus ancienne "
                 "est archivée."
             )
@@ -733,7 +733,7 @@ def recalibration_section(version: tuple[Any, ...]) -> None:
     st.caption(
         "Chaque appui sur « Optimiser les indicateurs », simulations en marche ou en Hold, crée "
         "une génération : les jumelles optimisées du plan, mêmes configurations, indicateurs "
-        "réoptimisés sur l'historique à jour (sélection sur la moyenne des scores "
+        "réoptimisés sur les 12 derniers mois (fenêtre glissante coupée 70/30, sélection sur la moyenne des scores "
         "d'apprentissage et de validation). R2-150 est le recalibrage de S-150 lors de la "
         f"2ᵉ optimisation. Au plus {recalibration.MAX_ACTIVE} générations tournent ; hors "
         "tornade, classements et production."
@@ -743,7 +743,7 @@ def recalibration_section(version: tuple[Any, ...]) -> None:
     if state.pending is not None:
         st.info(
             f"Génération R{state.pending} en préparation : optimisation des indicateurs "
-            "(1 à 2 h), puis démarrage."
+            "sur les 12 derniers mois, puis démarrage."
         )
     if state.message:
         st.caption(f"Dernier événement : {state.message}")

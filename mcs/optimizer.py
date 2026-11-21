@@ -10,7 +10,8 @@ plus anciens de l'historique ; le meilleur selon rendement / drawdown est retenu
 sur les 30 % suivants (score de validation, enregistré sans écarter la simulation). Seules
 les valeurs des indicateurs et du filtre de fond changent.
 
-Recalibrages (décision 48) : chaque essai est aussi évalué sur les 30 % de validation et le
+Recalibrages (décision 48) : fenêtre glissante des 12 derniers mois (et non tout
+l'historique), coupée 70/30 ; chaque essai est aussi évalué sur les 30 % de validation et le
 meilleur score moyen (apprentissage + validation) / 2 est retenu ; la validation n'est alors
 plus un contrôle indépendant.
 """
@@ -67,6 +68,8 @@ TRIALS = 40
 # validation (recalibrages).
 TRAIN = "train"
 MEAN = "mean"
+# Recalibrages : fenêtre glissante des 12 derniers mois, coupée 70/30.
+RECALIBRATION_WINDOW_DAYS = 365
 
 
 class OptimizationError(RuntimeError):
@@ -204,9 +207,10 @@ def optimize(
     trials: int = TRIALS,
     cache: dict[tuple[Any, ...], Any] | None = None,
     select: str = TRAIN,
+    window_days: int | None = None,
 ) -> OptimizationResult:
     started = time.perf_counter()
-    start, cut, end = data.split()
+    start, cut, end = data.split(window_days=window_days)
     cache = cache if cache is not None else {}
     best: tuple[float, float, float | None, StrategyConfig] | None = None
     for values in candidate_values(sim.draw, sim.seed, trials):
@@ -238,8 +242,12 @@ def _init_worker(data: Dataset, fees: FeeSchedule) -> None:
     _WORKER.update(data=data, fees=fees, cache={})
 
 
-def _worker_optimize(sim: StoredSimulation, trials: int, select: str) -> OptimizationResult:
-    return optimize(sim, _WORKER["data"], _WORKER["fees"], trials, _WORKER["cache"], select)
+def _worker_optimize(
+    sim: StoredSimulation, trials: int, select: str, window_days: int | None
+) -> OptimizationResult:
+    return optimize(
+        sim, _WORKER["data"], _WORKER["fees"], trials, _WORKER["cache"], select, window_days
+    )
 
 
 def save_result(
@@ -363,7 +371,16 @@ def run_recalibration(
     sims = load_simulations(conn, where)
     if not sims:
         raise OptimizationError("Aucun recalibrage en attente d'optimisation.")
-    return _optimize_all(conn, sims, data or load_dataset(conn), fees, workers, trials, MEAN)
+    return _optimize_all(
+        conn,
+        sims,
+        data or load_dataset(conn),
+        fees,
+        workers,
+        trials,
+        MEAN,
+        RECALIBRATION_WINDOW_DAYS,
+    )
 
 
 def _optimize_all(
@@ -374,19 +391,22 @@ def _optimize_all(
     workers: int,
     trials: int,
     select: str = TRAIN,
+    window_days: int | None = None,
 ) -> list[OptimizationResult]:
     by_id = {s.id: s for s in sims}
     results: list[OptimizationResult] = []
     if workers <= 1:
         cache: dict[tuple[Any, ...], Any] = {}
         for sim in sims:
-            result = optimize(sim, data, fees, trials, cache, select)
+            result = optimize(sim, data, fees, trials, cache, select, window_days)
             save_result(conn, result, sim)
             results.append(result)
             _log_progress(result, len(results), len(sims))
     else:
         with ProcessPoolExecutor(workers, initializer=_init_worker, initargs=(data, fees)) as pool:
-            futures = [pool.submit(_worker_optimize, sim, trials, select) for sim in sims]
+            futures = [
+                pool.submit(_worker_optimize, sim, trials, select, window_days) for sim in sims
+            ]
             for future in as_completed(futures):
                 result = future.result()
                 save_result(conn, result, by_id[result.sim_id])

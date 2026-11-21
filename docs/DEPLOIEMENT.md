@@ -118,7 +118,7 @@ docker compose exec engine python -m mcs.ideal hypotheses --exit "clôture 4 h"
 
 ## Recalibrages
 
-Simulations en marche ou en Hold, le bouton « Optimiser les indicateurs » crée une génération de recalibrage (décision 48) : les 150 jumelles optimisées du plan sont copiées, leurs indicateurs réoptimisés sur l'historique à jour dans un processus séparé (1 à 2 h avec `OPTIMIZER_WORKERS=4`, journal `logs/optimizer`), puis elles démarrent à 1 000 € sous l'indicatif R2-150, R3-150… Les 300 continuent sans interruption. Au plus 3 générations tournent ; la plus ancienne est archivée au démarrage d'une nouvelle. Une optimisation interrompue (redémarrage du moteur) reprend là où elle s'était arrêtée. En ligne de commande : `docker compose exec engine python -m mcs.control optimize`.
+Simulations en marche ou en Hold, le bouton « Optimiser les indicateurs » crée une génération de recalibrage (décision 48) : les 150 jumelles optimisées du plan sont copiées, leurs indicateurs réoptimisés sur les 12 derniers mois (fenêtre glissante coupée 70/30) dans un processus séparé (journal `logs/optimizer`), puis elles démarrent à 1 000 € sous l'indicatif R2-150, R3-150… Les 300 continuent sans interruption. Au plus 3 générations tournent ; la plus ancienne est archivée au démarrage d'une nouvelle. Une optimisation interrompue (redémarrage du moteur) reprend là où elle s'était arrêtée. En ligne de commande : `docker compose exec engine python -m mcs.control optimize`.
 
 La mise à jour vers le schéma v14 reconstruit la table `simulations` au premier démarrage du moteur (quelques secondes) ; sauvegarder la base avant le déploiement.
 

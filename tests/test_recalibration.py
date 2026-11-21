@@ -14,7 +14,7 @@ import mcs.recalibration as recalibration
 from mcs.backtest import Dataset
 from mcs.live.state import Command
 from mcs.metrics import load_records
-from mcs.optimizer import MEAN, TRAIN, optimize, run_recalibration
+from mcs.optimizer import MEAN, RECALIBRATION_WINDOW_DAYS, TRAIN, optimize, run_recalibration
 from mcs.sampling import StoredSimulation, build_config, draw_plan
 from mcs.storage.db import JournalMode, connect
 from mcs.strategy.serialize import config_from_json
@@ -154,3 +154,26 @@ def test_selection_on_train_or_mean(data, monkeypatch: pytest.MonkeyPatch) -> No
         train.train_score + train.validation_score
     ) / 2
     assert json.dumps(mean.validation_score)  # score enregistré tel que sélectionné
+
+
+def test_rolling_window(data, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """Recalibrages : 12 derniers mois coupés 70/30 ; plan : tout l'historique."""
+    day = 86_400_000
+    start, cut, end = data.split(window_days=RECALIBRATION_WINDOW_DAYS)
+    assert end == data.end and 364 * day <= end - start <= 365 * day
+    assert abs((cut - start) / (end - start) - 0.7) < 0.01
+    assert data.split()[0] == data.start < start
+    draw = next(d for d in draw_plan(seed=5) if d["family"] == "ema_cross")
+    sim = StoredSimulation(2, 1, "optimized", "ema_cross", 11, build_config(draw), draw)
+    seen: set[int] = set()
+
+    class Result:
+        score = 0.0
+
+    def fake(config: Any, dataset: Any, begin: int, stop: int, fees: Any, cache: Any) -> Result:
+        seen.add(begin)
+        return Result()
+
+    monkeypatch.setattr(optimizer, "run_backtest", fake)
+    optimize(sim, data, FEES, trials=2, select=MEAN, window_days=RECALIBRATION_WINDOW_DAYS)
+    assert seen == {start, cut}

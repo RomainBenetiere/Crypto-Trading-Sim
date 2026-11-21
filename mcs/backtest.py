@@ -110,9 +110,13 @@ class Dataset:
         last = max(int(m.h1.index[-1]) + HOUR for m in self.markets.values() if len(m.h1))
         return last // BAR_4H * BAR_4H
 
-    def split(self, ratio: float = 0.7) -> tuple[int, int, int]:
-        """(début, coupure, fin) : apprentissage [début, coupure), validation [coupure, fin)."""
+    def split(self, ratio: float = 0.7, window_days: int | None = None) -> tuple[int, int, int]:
+        """(début, coupure, fin) : apprentissage [début, coupure), validation [coupure, fin).
+        `window_days` : seulement les N derniers jours (fenêtre glissante) ; les indicateurs
+        restent initialisés par l'historique antérieur."""
         start, end = self.start, self.end
+        if window_days is not None:
+            start = max(start, (end - window_days * DAY) // BAR_4H * BAR_4H)
         cut = start + int((end - start) * ratio) // BAR_4H * BAR_4H
         return start, cut, end
 

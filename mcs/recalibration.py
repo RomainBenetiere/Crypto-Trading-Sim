@@ -1,6 +1,6 @@
 """Recalibrages (décision 48) : chaque optimisation demandée en cours de live crée une
 génération de nouvelles simulations, copies des jumelles optimisées du plan dont seuls les
-réglages d'indicateurs sont réoptimisés sur l'historique à jour.
+réglages d'indicateurs sont réoptimisés sur les 12 derniers mois (fenêtre glissante).
 
 Indicatif R2-150 : recalibrage de S-150 (jumelle d'origine) lors de la
 2ᵉ optimisation (la 1ʳᵉ est celle du plan). Les recalibrages tournent à 1 000 € depuis leur
