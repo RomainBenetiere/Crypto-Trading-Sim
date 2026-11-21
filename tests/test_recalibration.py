@@ -177,3 +177,16 @@ def test_rolling_window(data, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa:
     monkeypatch.setattr(optimizer, "run_backtest", fake)
     optimize(sim, data, FEES, trials=2, select=MEAN, window_days=RECALIBRATION_WINDOW_DAYS)
     assert seen == {start, cut}
+
+
+def test_live_dataset_uses_frozen_basket(
+    conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En live, idéales et recalibrages s'optimisent sur le panier figé, pas sur la sélection
+    du dashboard (qui a pu changer depuis le lancement)."""
+    calls: list[Any] = []
+    monkeypatch.setattr(optimizer, "load_dataset", lambda c, markets=None: calls.append(markets))
+    optimizer.live_dataset(conn)  # avant le lancement : la sélection
+    conn.execute("UPDATE engine_state SET basket_json = ?", (json.dumps(["BTC-EUR", "ETH-EUR"]),))
+    optimizer.live_dataset(conn)
+    assert calls == [None, ["BTC-EUR", "ETH-EUR"]]

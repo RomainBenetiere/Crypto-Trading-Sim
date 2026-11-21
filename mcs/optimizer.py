@@ -45,6 +45,7 @@ from mcs.indicators.signals import (
     TrendFilterKind,
     VolumeConfirmation,
 )
+from mcs.live.state import read_state
 from mcs.logging_setup import configure_logging
 from mcs.recalibration import PENDING as PENDING_RECALIBRATION
 from mcs.sampling import (
@@ -342,6 +343,13 @@ def run(
             _set_status(conn, "TODO")
 
 
+def live_dataset(conn: sqlite3.Connection) -> Dataset:
+    """Historique des paires que les simulations tradent : le panier figé au lancement (la
+    sélection du dashboard peut avoir changé depuis), ou la sélection avant le lancement."""
+    basket = read_state(conn).basket
+    return load_dataset(conn, list(basket) if basket else None)
+
+
 def run_ideal(
     conn: sqlite3.Connection,
     fees: FeeSchedule,
@@ -355,7 +363,7 @@ def run_ideal(
     sims = load_simulations(conn, where)
     if not sims:
         raise OptimizationError("Aucune simulation idéale en attente d'optimisation.")
-    return _optimize_all(conn, sims, data or load_dataset(conn), fees, workers, trials)
+    return _optimize_all(conn, sims, data or live_dataset(conn), fees, workers, trials)
 
 
 def run_recalibration(
@@ -374,7 +382,7 @@ def run_recalibration(
     return _optimize_all(
         conn,
         sims,
-        data or load_dataset(conn),
+        data or live_dataset(conn),
         fees,
         workers,
         trials,
