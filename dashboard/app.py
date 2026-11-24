@@ -136,6 +136,8 @@ METRIC_COLUMNS = {"pnl": "pnl_eur", "calmar": "calmar"}
 
 
 def metric_value(metric: str, value: float | None) -> str:
+    if value is not None and pd.isna(value):  # Calmar sous 10 trades : NaN dans les tableaux
+        value = None
     if metric == "pnl" or value is None:
         return fmt.signed_eur(value)
     return ("+" if value > 0 else "") + fmt.number(value, 2)
@@ -1000,8 +1002,39 @@ SORT_KEYS = {
 }
 
 
+KINDS = {
+    "Tous les types": None,
+    "Plan (S)": "plan",
+    "Idéales (SO)": "ideal",
+    "Recalibrages (R)": "recalibrated",
+    "Série RA": "adaptive",
+}
+
+
+def running_simulations(version: tuple[Any, ...], table: pd.DataFrame) -> pd.DataFrame:
+    """Les 300 du plan, puis les idéales, recalibrages et RA qui tournent (démarrées, pas
+    archivées)."""
+    frames = [table.assign(kind="plan")]
+    for kind, extra in (
+        ("ideal", ideal_simulations(version)),
+        ("recalibrated", recalibrated_simulations(version)),
+        ("adaptive", adaptive_simulations(version)),
+    ):
+        if not extra.empty:
+            running = extra[extra["started_at"].notna() & extra["archived_at"].isna()]
+            frames.append(running.assign(kind=kind))
+    return pd.concat(frames, ignore_index=True)
+
+
 def all_simulations(table: pd.DataFrame) -> None:
     st.subheader("Toutes les simulations")
+    kind = st.radio(
+        "Type",
+        list(KINDS),
+        horizontal=True,
+        key="sims_kind",
+        label_visibility="collapsed",
+    )
     cols = st.columns([2, 3, 2, 1])
     mode = cols[0].radio(
         "Calibrage",
@@ -1021,6 +1054,8 @@ def all_simulations(table: pd.DataFrame) -> None:
     )
     descending = cols[3].toggle("Décroissant", value=True, key="sims_desc")
     view = table
+    if KINDS[kind] is not None:
+        view = view[view["kind"] == KINDS[kind]]
     if mode != "Toutes":
         view = view[view["Calibrage"] == ("Typique" if mode == "Typiques" else "Optimisé")]
     if search:
@@ -1033,7 +1068,10 @@ def all_simulations(table: pd.DataFrame) -> None:
     shown.insert(5, "Trailing", view["Trailing"].to_numpy())
     shown.insert(6, "Take profit", view["Take profit"].to_numpy())
     st.dataframe(shown, hide_index=True, width="stretch", height=420)
-    st.caption(f"{len(view)} simulations affichées.")
+    st.caption(
+        f"{len(view)} simulations affichées. Idéales, recalibrages et RA tournent depuis leur "
+        "propre démarrage : leur P&L couvre une période plus courte que celle du plan."
+    )
 
 
 def tab_follow_up() -> None:
@@ -1069,7 +1107,7 @@ def tab_follow_up() -> None:
         recalibration_section(version)
         adaptive_section(version)
         buy_and_hold_table()
-    all_simulations(table)
+    all_simulations(running_simulations(version, table))
 
 
 # --- Onglet « Paramètres des indicateurs » ---------------------------------------------------

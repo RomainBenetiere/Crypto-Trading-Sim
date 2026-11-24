@@ -419,6 +419,12 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     assert "RA-002" in labels
     ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
     assert "Série RA 1" in ranks  # sélectionnable en production après 10 trades
+    # Tableau « Toutes les simulations » : plan, R et RA qui tournent, filtre par type.
+    assert any(c.value.startswith("16 simulations affichées") for c in at.caption)
+    at.radio(key="sims_kind").set_value("Série RA").run()
+    assert any(c.value.startswith("4 simulations affichées") for c in at.caption)
+    calmar = [v for df in at.dataframe for v in df.value.get("Calmar", [])]
+    assert "nan" not in calmar
 
 
 def test_writer_connection_per_thread(app_db: Path) -> None:
