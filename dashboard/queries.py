@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -14,10 +16,11 @@ import pandas as pd
 import mcs.adaptive as adaptive
 import mcs.recalibration as recalibration
 from dashboard import fmt
+from mcs.config import JournalMode
 from mcs.live.state import Command, period_totals, request_command
 from mcs.metrics import METRICS, OPTION_LABELS, VARIABLE_LABELS, calmar_ratio
 from mcs.sampling import CATEGORICALS, NUMERICS
-from mcs.storage.db import now_ms, transaction
+from mcs.storage.db import connect, now_ms, transaction
 
 ROLE_LABELS = {
     "main": "Signal principal",
@@ -34,6 +37,16 @@ def open_readonly(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def open_writer(path: Path, journal_mode: JournalMode) -> Iterator[sqlite3.Connection]:
+    """Connexion d'écriture le temps d'une action du dashboard, dans le thread qui l'utilise."""
+    conn = connect(path, journal_mode)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # --- Pilotage -------------------------------------------------------------------------------

@@ -419,3 +419,30 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     assert "RA-002" in labels
     ranks = [r for df in at.dataframe for r in df.value.get("Rang", [])]
     assert "Série RA 1" in ranks  # sélectionnable en production après 10 trades
+
+
+def test_writer_connection_per_thread(app_db: Path) -> None:
+    """Streamlit exécute les actions dans des threads différents : chaque action ouvre sa
+    propre connexion d'écriture (une connexion partagée levait ProgrammingError à l'arrêt du
+    réel)."""
+    import threading
+
+    connect(app_db, JournalMode.WAL).close()
+    errors: list[BaseException] = []
+
+    def action() -> None:
+        try:
+            with queries.open_writer(app_db, JournalMode.WAL) as conn:
+                production.wind_down_live(conn, 1)
+        except BaseException as exc:
+            errors.append(exc)
+
+    for _ in range(2):
+        thread = threading.Thread(target=action)
+        thread.start()
+        thread.join()
+    assert not errors
+    with queries.open_writer(app_db, JournalMode.WAL) as conn:
+        pass
+    with pytest.raises(sqlite3.ProgrammingError):  # fermée après l'action
+        conn.execute("SELECT 1")

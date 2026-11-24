@@ -10,7 +10,9 @@ métriques horaires écrites par le moteur. Accès : réseau local uniquement (d
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
+from contextlib import AbstractContextManager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -47,7 +49,7 @@ from mcs.metrics import (  # noqa: E402
     synthesis,
     tornado,
 )
-from mcs.storage.db import connect, now_ms  # noqa: E402
+from mcs.storage.db import now_ms  # noqa: E402
 from mcs.storage.orders import load_orders  # noqa: E402
 
 PRIMARY, MUTED, BH_COLOR = "#2f6fd6", "#a7b3c6", "#6b7280"
@@ -77,10 +79,10 @@ def ro() -> Any:
     return queries.open_readonly(settings().db_path)
 
 
-@st.cache_resource
-def rw() -> Any:
-    conn = connect(settings().db_path, settings().journal_mode)
-    return conn
+def rw() -> AbstractContextManager[sqlite3.Connection]:
+    """Connexion d'écriture ouverte pour une action puis fermée : une connexion mise en cache
+    serait partagée entre les threads de Streamlit, ce que sqlite3 refuse."""
+    return queries.open_writer(settings().db_path, settings().journal_mode)
 
 
 def data_version() -> tuple[Any, ...]:
@@ -207,7 +209,8 @@ def buttons(info: queries.EngineInfo) -> None:
         st.warning(message)
         left, right = st.columns(2)
         if left.button("Confirmer", key="btn_confirm", type="primary"):
-            queries.send_command(rw(), confirming)
+            with rw() as conn:
+                queries.send_command(conn, confirming)
             st.session_state.pop("confirm")
             st.rerun()
         if right.button("Annuler", key="btn_cancel"):
@@ -227,7 +230,8 @@ def buttons(info: queries.EngineInfo) -> None:
             if needs_confirm:
                 st.session_state["confirm"] = command
             else:
-                queries.send_command(rw(), command)
+                with rw() as conn:
+                    queries.send_command(conn, command)
             st.rerun()
 
 
@@ -625,7 +629,8 @@ def ideal_section(version: tuple[Any, ...], plan: pd.DataFrame, metric: str) -> 
         )
         if st.button("Confirmer la nouvelle génération", key="btn_ideal_create"):
             try:
-                ideals.request_generation(rw(), now_ms())
+                with rw() as conn:
+                    ideals.request_generation(conn, now_ms())
             except ideals.IdealError as exc:
                 st.error(str(exc))
             else:
@@ -928,7 +933,8 @@ def adaptive_section(version: tuple[Any, ...]) -> None:
             )
             if st.button("Confirmer la création", key="btn_adaptive_create"):
                 try:
-                    adaptive.create_series(rw(), now_ms())
+                    with rw() as conn:
+                        adaptive.create_series(conn, now_ms())
                 except adaptive.AdaptiveError as exc:
                     st.error(str(exc))
                 else:
@@ -1168,7 +1174,8 @@ def tab_markets() -> None:
     st.code("CRYPTO_BASKET=" + ",".join(selected), language=None)
     info = queries.engine_info(ro())
     if st.button("Valider la sélection", key="btn_validate", type="primary", disabled=not selected):
-        queries.save_selection(rw(), selected)
+        with rw() as conn:
+            queries.save_selection(conn, selected)
         later = " après une remise à zéro" if info.status != "NOT_STARTED" else ""
         st.success(
             f"Sélection enregistrée ({len(selected)} paires) : elle s'appliquera au prochain lancement{later}."
@@ -1327,7 +1334,8 @@ def tab_production() -> None:
         type="primary",
         disabled=same,
     ):
-        production.choose(rw(), sim_id, amount, metric, now_ms())
+        with rw() as conn:
+            production.choose(conn, sim_id, amount, metric, now_ms())
         st.rerun()
     production_history()
 
@@ -1369,7 +1377,8 @@ def shadow_section(choice: production.Choice) -> None:
     )
     if shadow:
         if st.button("Arrêter l'ombre", key="btn_shadow_off"):
-            production.set_mode(rw(), production.Mode.OFF, now_ms())
+            with rw() as conn:
+                production.set_mode(conn, production.Mode.OFF, now_ms())
             st.rerun()
     elif state.reset_requested_at is not None:
         st.info("Remise à zéro de l'ombre demandée : en attente du moteur.")
@@ -1377,7 +1386,8 @@ def shadow_section(choice: production.Choice) -> None:
         has_portfolio = conn.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0] > 0
         start, reset = st.columns([1, 3])
         if start.button("Démarrer l'ombre", key="btn_shadow_on", type="primary"):
-            production.set_mode(rw(), production.Mode.SHADOW, now_ms())
+            with rw() as conn:
+                production.set_mode(conn, production.Mode.SHADOW, now_ms())
             st.rerun()
         if has_portfolio:
             with reset.popover("Remettre l'ombre à zéro"):
@@ -1386,7 +1396,8 @@ def shadow_section(choice: production.Choice) -> None:
                     "enregistrée. L'ombre repartira du capital engagé au prochain démarrage."
                 )
                 if st.button("Confirmer la remise à zéro", key="btn_shadow_reset"):
-                    production.request_shadow_reset(rw(), now_ms())
+                    with rw() as conn:
+                        production.request_shadow_reset(conn, now_ms())
                     st.rerun()
     if shadow or conn.execute("SELECT COUNT(*) FROM production_orders").fetchone()[0]:
         st.markdown("##### Portefeuille ombre")
@@ -1440,7 +1451,8 @@ def live_section(choice: production.Choice) -> None:
         if status is production.LiveStatus.ON and cols[0].button(
             "Arrêter le réel (liquidation progressive)", key="btn_live_wind_down"
         ):
-            production.wind_down_live(rw(), now_ms())
+            with rw() as conn:
+                production.wind_down_live(conn, now_ms())
             st.rerun()
         with cols[1].popover("Arrêt d'urgence"):
             st.markdown(
@@ -1448,7 +1460,8 @@ def live_section(choice: production.Choice) -> None:
                 "puis coupe le mode réel."
             )
             if st.button("Confirmer l'arrêt d'urgence", key="btn_live_emergency", type="primary"):
-                production.request_emergency(rw(), now_ms())
+                with rw() as conn:
+                    production.request_emergency(conn, now_ms())
                 st.rerun()
     if (
         status is not production.LiveStatus.OFF
@@ -1471,7 +1484,8 @@ def live_start_form() -> None:
         typed = st.text_input("Confirmation", key="live_confirmation")
         if st.form_submit_button("Démarrer les ordres réels", type="primary"):
             try:
-                production.start_live(rw(), typed, now_ms())
+                with rw() as conn:
+                    production.start_live(conn, typed, now_ms())
             except ValueError as exc:
                 st.error(str(exc))
             else:
