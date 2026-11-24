@@ -423,6 +423,8 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     assert any(c.value.startswith("16 simulations affichées") for c in at.caption)
     at.radio(key="sims_kind").set_value("Série RA").run()
     assert any(c.value.startswith("4 simulations affichées") for c in at.caption)
+    shown = next(df.value for df in at.dataframe if "Trailing" in df.value)
+    assert sorted(shown["Paire"]) == ["P-001", "P-002", "P-003", "P-004"]  # jumelles d'origine
     calmar = [v for df in at.dataframe for v in df.value.get("Calmar", [])]
     assert "nan" not in calmar
 

@@ -145,11 +145,15 @@ def simulations_table(conn: sqlite3.Connection, kind: str = "plan") -> pd.DataFr
     configuration lisible et métriques (si le live a démarré)."""
     rows = []
     for r in conn.execute(
-        """SELECT s.id, s.pair_id, s.mode, s.family, s.draw_json, s.objective, s.generation,
+        # Recalibrages et RA : paire de leur jumelle d'origine (la base leur attribue une
+        # paire technique nouvelle, `UNIQUE (pair_id, mode)`), pour les comparer à la typique
+        # et à l'optimisée de la même paire.
+        """SELECT s.id, COALESCE(o.pair_id, s.pair_id) AS pair_id, s.mode, s.family, s.draw_json, s.objective, s.generation,
                   s.started_at, s.archived_at, s.hypothesis, s.source_sim_id, s.train_score,
                   s.validation_score, m.pnl_eur, m.pnl_pct, m.max_drawdown_pct,
                   m.closed_trades, m.win_rate, m.total_fees, m.bh_gap_eur, m.open_positions
            FROM simulations s LEFT JOIN metrics m ON m.sim_id = s.id
+           LEFT JOIN simulations o ON o.id = s.source_sim_id
            WHERE s.kind = ? ORDER BY s.id""",
         (kind,),
     ):
