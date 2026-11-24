@@ -998,6 +998,7 @@ SORT_KEYS = {
     "Réussite": "win_rate",
     "Frais": "fees",
     "vs buy & hold": "bh_gap",
+    "Écart vs origine": "origin_gap",
     "Simulation": "sim_id",
 }
 
@@ -1022,8 +1023,24 @@ def running_simulations(version: tuple[Any, ...], table: pd.DataFrame) -> pd.Dat
     ):
         if not extra.empty:
             running = extra[extra["started_at"].notna() & extra["archived_at"].isna()]
-            frames.append(running.assign(kind=kind))
+            frames.append(_with_origin(running).assign(kind=kind))
     return pd.concat(frames, ignore_index=True)
+
+
+def _with_origin(frame: pd.DataFrame) -> pd.DataFrame:
+    """Recalibrages et RA : P&L de la jumelle d'origine sur leur propre période (depuis leur
+    démarrage, base 1 000 €) et écart, pour comparer sans rétro-calcul."""
+    copies = frame[frame["source_sim_id"].notna()]
+    if copies.empty:
+        return frame
+    conn = ro()
+    gaps = pd.concat(
+        [_period_gaps(conn, gen) for _, gen in copies.groupby("generation", dropna=False)]
+    ).set_index("sim_id")
+    out = frame.copy()
+    out["origin_pnl"] = out["sim_id"].map(gaps["origin"])
+    out["origin_gap"] = out["sim_id"].map(gaps["gap"])
+    return out
 
 
 def all_simulations(table: pd.DataFrame) -> None:
@@ -1067,10 +1084,18 @@ def all_simulations(table: pd.DataFrame) -> None:
     shown.insert(4, "Filtre 1 j", view["Filtre 1 j"].to_numpy())
     shown.insert(5, "Trailing", view["Trailing"].to_numpy())
     shown.insert(6, "Take profit", view["Take profit"].to_numpy())
+    for column, label in (
+        ("origin_pnl", "P&L origine (même période)"),
+        ("origin_gap", "Écart vs origine"),
+    ):
+        values = view[column] if column in view else pd.Series(index=view.index, dtype=float)
+        shown[label] = values.map(lambda v: "—" if pd.isna(v) else fmt.signed_eur(v)).to_numpy()
     st.dataframe(shown, hide_index=True, width="stretch", height=420)
     st.caption(
         f"{len(view)} simulations affichées. Idéales, recalibrages et RA tournent depuis leur "
-        "propre démarrage : leur P&L couvre une période plus courte que celle du plan."
+        "propre démarrage à 1 000 € : leur P&L couvre une période plus courte que celle du "
+        "plan. « P&L origine (même période) » : P&L de la jumelle d'origine sur cette même "
+        "période, ramené à 1 000 €."
     )
 
 
