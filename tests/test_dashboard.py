@@ -426,6 +426,15 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     shown = next(df.value for df in at.dataframe if "Trailing" in df.value)
     assert sorted(shown["Paire"]) == ["P-001", "P-002", "P-003", "P-004"]  # jumelles d'origine
     assert all(v != "—" for v in shown["P&L origine (même période)"])  # même période
+    assert any("Valeur horaire ramenée à 1 000 €" in c.value for c in at.caption)  # graphique
+    # Période commune : depuis le démarrage de la série RA, pour toutes les simulations.
+    at.radio(key="sims_kind").set_value("Tous les types").run()
+    period = next(o for o in at.selectbox(key="sims_period").options if "série RA" in o)
+    at.selectbox(key="sims_period").set_value(period).run()
+    assert not at.exception
+    shown = next(df.value for df in at.dataframe if "Trailing" in df.value)
+    assert (shown["P&L période"] != "—").sum() == 16
+    assert (shown["Écart vs origine"] != "—").sum() == 8  # R2 et RA
     calmar = [v for df in at.dataframe for v in df.value.get("Calmar", [])]
     assert "nan" not in calmar
 

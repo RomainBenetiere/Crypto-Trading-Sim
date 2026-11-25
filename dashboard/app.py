@@ -998,6 +998,7 @@ SORT_KEYS = {
     "Réussite": "win_rate",
     "Frais": "fees",
     "vs buy & hold": "bh_gap",
+    "P&L période": "period_pnl",
     "Écart vs origine": "origin_gap",
     "Simulation": "sim_id",
 }
@@ -1043,8 +1044,59 @@ def _with_origin(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def all_simulations(table: pd.DataFrame) -> None:
+HOUR_MS, DAY_MS = 3_600_000, 86_400_000
+PERIOD_DAYS = (1, 3, 7, 14, 30)
+
+
+def period_choices(table: pd.DataFrame) -> dict[str, int | None]:
+    """Périodes de comparaison : depuis le démarrage de chaque simulation, depuis le démarrage
+    d'une génération R ou de la série RA, ou sur les derniers jours (début arrondi à l'heure)."""
+    choices: dict[str, int | None] = {"Depuis leur démarrage": None}
+    copies = table[table["kind"].isin(["recalibrated", "adaptive"])]
+    for (kind, generation), gen in copies.groupby(["kind", "generation"], dropna=False):
+        name = "la série RA" if kind == "adaptive" else f"R{int(generation)}"
+        start = int(gen["started_at"].min())
+        choices[f"Depuis le démarrage de {name} ({fmt.timestamp(start, with_time=False)})"] = start
+    hour = now_ms() // HOUR_MS * HOUR_MS
+    for days in PERIOD_DAYS:
+        label = "Dernières 24 h" if days == 1 else f"{days} derniers jours"
+        choices[label] = hour - days * DAY_MS
+    return choices
+
+
+@st.cache_data(show_spinner=False)
+def period_pnls(version: tuple[Any, ...], sim_ids: tuple[int, ...], since: int) -> dict[int, float]:
+    return queries.period_pnl(ro(), list(sim_ids), since)
+
+
+def with_period(table: pd.DataFrame, version: tuple[Any, ...], since: int | None) -> pd.DataFrame:
+    """P&L de chaque simulation sur la période choisie, ramené à 1 000 € au début de la période
+    (ou à son démarrage s'il est postérieur), et, pour les R et RA, celui de leur jumelle
+    d'origine sur la même période."""
+    out = table.copy()
+    if since is None:
+        out["period_pnl"] = out["pnl_eur"]
+        return out
+    pnl = period_pnls(version, tuple(int(i) for i in out["sim_id"]), since)
+    out["period_pnl"] = out["sim_id"].map(pnl)
+    source = out["source_sim_id"].where(out["kind"].isin(["recalibrated", "adaptive"]))
+    out["origin_pnl"] = source.map(lambda s: pnl.get(int(s)) if pd.notna(s) else None)
+    out["origin_gap"] = out["period_pnl"] - out["origin_pnl"].astype(float)
+    return out
+
+
+def all_simulations(table: pd.DataFrame, version: tuple[Any, ...]) -> None:
     st.subheader("Toutes les simulations")
+    choices = period_choices(table)
+    period = st.selectbox(
+        "Période de comparaison",
+        list(choices),
+        key="sims_period",
+        help="P&L ramené à 1 000 € au début de la période, ou au démarrage de la simulation "
+        "s'il est postérieur : compare les performances récentes de toutes les simulations.",
+    )
+    since = choices[period]
+    table = with_period(table, version, since)
     kind = st.radio(
         "Type",
         list(KINDS),
@@ -1085,6 +1137,7 @@ def all_simulations(table: pd.DataFrame) -> None:
     shown.insert(5, "Trailing", view["Trailing"].to_numpy())
     shown.insert(6, "Take profit", view["Take profit"].to_numpy())
     for column, label in (
+        ("period_pnl", "P&L période"),
         ("origin_pnl", "P&L origine (même période)"),
         ("origin_gap", "Écart vs origine"),
     ):
@@ -1095,7 +1148,69 @@ def all_simulations(table: pd.DataFrame) -> None:
         f"{len(view)} simulations affichées. Idéales, recalibrages et RA tournent depuis leur "
         "propre démarrage à 1 000 € : leur P&L couvre une période plus courte que celle du "
         "plan. « P&L origine (même période) » : P&L de la jumelle d'origine sur cette même "
-        "période, ramené à 1 000 €."
+        "période, ramené à 1 000 €. « P&L période » : P&L sur la période de comparaison, "
+        "ramené à 1 000 € à son début."
+    )
+    simulations_chart(table, view, since)
+
+
+def simulations_chart(table: pd.DataFrame, view: pd.DataFrame, since: int | None) -> None:
+    """Courbes de valeur des simulations choisies (par défaut les 5 premières du tableau
+    filtré et trié), ramenées à 1 000 € au début de la période."""
+    st.markdown("#### Graphique des simulations")
+    labels = dict(zip(table["sim_id"].astype(int), table["Simulation"], strict=True))
+    picked = st.multiselect(
+        "Simulations à afficher (20 au plus)",
+        list(labels),
+        default=[int(i) for i in view["sim_id"].head(5)],
+        format_func=lambda i: labels[i],
+        max_selections=20,
+    )
+    show_bh = st.toggle("Buy & hold", value=True, key="sims_chart_bh")
+    if not picked:
+        st.info("Choisissez au moins une simulation.")
+        return
+    conn = ro()
+    series = queries.value_series(conn, picked)
+    if since is not None:
+        series = series[series["ts"] >= since]
+    if series.empty:
+        st.info("Pas encore de valeurs sur cette période.")
+        return
+    first = series.groupby("sim_id")["value"].transform("first")
+    series = series.assign(value=1000 * series["value"] / first)[first > 0]
+    fig = go.Figure()
+    for sim_id in picked:
+        rows = series[series["sim_id"] == sim_id]
+        fig.add_scatter(
+            x=[paris(t) for t in rows["ts"]], y=rows["value"], mode="lines", name=labels[sim_id]
+        )
+    lines = load_buy_and_hold(conn)
+    if show_bh and lines:
+        start = int(series["ts"].min())
+        bh = buy_and_hold_series(conn, lines, settings().fee_taker, start, now_ms())
+        if bh and bh[0][1]:
+            base = float(bh[0][1])
+            fig.add_scatter(
+                x=[paris(t) for t, _ in bh],
+                y=[1000 * float(v) / base for _, v in bh],
+                mode="lines",
+                name="Buy & hold",
+                line={"color": BH_COLOR, "dash": "dash"},
+            )
+    fig.update_layout(
+        separators=", ",
+        height=380,
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        yaxis_title="€ (base 1 000)",
+        legend={"orientation": "h", "y": -0.15},
+        hovermode="x unified",
+    )
+    fig.update_xaxes(tickformat="%d/%m %H:%M", hoverformat="%d/%m/%Y %H:%M")
+    st.plotly_chart(fig, width="stretch", key="sims_chart")
+    st.caption(
+        "Valeur horaire ramenée à 1 000 € au début de la période (ou au démarrage de chaque "
+        "simulation) ; buy & hold du panier ramené à 1 000 € au début de la courbe."
     )
 
 
@@ -1132,7 +1247,7 @@ def tab_follow_up() -> None:
         recalibration_section(version)
         adaptive_section(version)
         buy_and_hold_table()
-    all_simulations(running_simulations(version, table))
+    all_simulations(running_simulations(version, table), version)
 
 
 # --- Onglet « Paramètres des indicateurs » ---------------------------------------------------
