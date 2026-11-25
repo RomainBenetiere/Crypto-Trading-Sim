@@ -435,6 +435,9 @@ async def test_app_adaptive_section(app_db: Path) -> None:
     shown = next(df.value for df in at.dataframe if "Trailing" in df.value)
     assert (shown["P&L période"] != "—").sum() == 16
     assert (shown["Écart vs origine"] != "—").sum() == 8  # R2 et RA
+    assert (shown["Ulcer"] != "—").sum() == 16
+    at.selectbox(key="sims_sort").set_value("Ulcer").run()
+    assert not at.exception
     calmar = [v for df in at.dataframe for v in df.value.get("Calmar", [])]
     assert "nan" not in calmar
 
@@ -464,3 +467,25 @@ def test_writer_connection_per_thread(app_db: Path) -> None:
         pass
     with pytest.raises(sqlite3.ProgrammingError):  # fermée après l'action
         conn.execute("SELECT 1")
+
+
+def test_risk_metrics(conn: sqlite3.Connection) -> None:
+    """Recul depuis le pic, écart à la baisse journalier, Ulcer et P&L ÷ Ulcer."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    day = 86_400_000
+    rows = [
+        (1, t, v) for t, v in ((0, 1000), (3_600_000, 1200), (day, 900), (day + 3_600_000, 1000))
+    ]
+    rows += [(2, t, 1000) for t in (0, day)]
+    conn.executemany(
+        "INSERT INTO portfolio_values (sim_id, ts, total_value, cash) VALUES (?, ?, ?, '0')",
+        [(s, t, str(v)) for s, t, v in rows],
+    )
+    risk = queries.risk_metrics(conn, [1, 2, 3])
+    assert risk.at[1, "current_dd"] == pytest.approx(100 / 6)
+    assert risk.at[1, "ulcer"] == pytest.approx(((25**2 + (100 / 6) ** 2) / 4) ** 0.5)
+    assert risk.at[1, "downside"] == pytest.approx(100 / 6)
+    assert risk.at[1, "ulcer_ratio"] == pytest.approx(0)
+    assert risk.at[2, "ulcer"] == 0 and risk.at[2, "ulcer_ratio"] == 0
+    assert 3 not in risk.index
+    assert queries.risk_metrics(conn, [1], since=day).at[1, "current_dd"] == 0  # période

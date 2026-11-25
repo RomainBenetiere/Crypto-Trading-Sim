@@ -272,6 +272,53 @@ def period_pnl(
     }
 
 
+RISK_COLUMNS = ("current_dd", "downside", "ulcer", "ulcer_ratio")
+DAY_MS = 86_400_000
+
+
+def risk_metrics(conn: sqlite3.Connection, sim_ids: list[int], since: int = 0) -> pd.DataFrame:
+    """Indicateurs de risque de chaque simulation sur ses valeurs horaires depuis `since`
+    (index `sim_id`, valeurs en %) :
+
+    - `current_dd` : recul actuel depuis le plus haut de la période ;
+    - `downside` : écart à la baisse des rendements journaliers (racine de la moyenne des
+      rendements négatifs au carré, jours positifs comptés à zéro), comme le ratio de Sortino ;
+    - `ulcer` : indice Ulcer, racine de la moyenne des reculs au carré (profondeur et durée) ;
+    - `ulcer_ratio` : P&L % de la période ÷ Ulcer (plancher 1, comme le drawdown du Calmar).
+    """
+    empty = pd.DataFrame(columns=list(RISK_COLUMNS), index=pd.Index([], name="sim_id"))
+    if not sim_ids:
+        return empty
+    marks = ",".join("?" * len(sim_ids))
+    frame = pd.read_sql_query(
+        f"""SELECT sim_id, ts, total_value FROM portfolio_values
+            WHERE sim_id IN ({marks}) AND ts >= ? ORDER BY sim_id, ts""",
+        conn,
+        params=(*sim_ids, since),
+    )
+    if frame.empty:
+        return empty
+    frame["value"] = frame.pop("total_value").astype(float)
+    frame = frame[frame["value"] > 0]
+    groups = frame.groupby("sim_id")["value"]
+    drawdown = 100 * (1 - frame["value"] / groups.cummax())
+    ulcer = (drawdown**2).groupby(frame["sim_id"]).mean() ** 0.5
+    daily = frame.groupby(["sim_id", frame["ts"] // DAY_MS])["value"].last()
+    returns = daily.groupby(level="sim_id").pct_change().dropna()
+    downside = (100 * returns.clip(upper=0)).pow(2).groupby(level="sim_id").mean() ** 0.5
+    pnl_pct = 100 * (groups.last() / groups.first() - 1)
+    out = pd.DataFrame(
+        {
+            "current_dd": drawdown.groupby(frame["sim_id"]).last(),
+            "downside": downside,
+            "ulcer": ulcer,
+            "ulcer_ratio": pnl_pct / ulcer.clip(lower=1.0),
+        }
+    )
+    out.index.name = "sim_id"
+    return out
+
+
 def ideal_bh_start(conn: sqlite3.Connection, sim_id: int) -> Decimal | None:
     """Valeur du buy & hold au démarrage d'une simulation idéale."""
     row = conn.execute("SELECT bh_start_value FROM simulations WHERE id = ?", (sim_id,)).fetchone()

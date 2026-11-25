@@ -999,6 +999,10 @@ SORT_KEYS = {
     "Frais": "fees",
     "vs buy & hold": "bh_gap",
     "P&L période": "period_pnl",
+    "Recul depuis le pic": "current_dd",
+    "Écart à la baisse": "downside",
+    "Ulcer": "ulcer",
+    "P&L ÷ Ulcer": "ulcer_ratio",
     "Écart vs origine": "origin_gap",
     "Simulation": "sim_id",
 }
@@ -1069,11 +1073,19 @@ def period_pnls(version: tuple[Any, ...], sim_ids: tuple[int, ...], since: int) 
     return queries.period_pnl(ro(), list(sim_ids), since)
 
 
+@st.cache_data(show_spinner=False)
+def risk_table(version: tuple[Any, ...], sim_ids: tuple[int, ...], since: int) -> pd.DataFrame:
+    return queries.risk_metrics(ro(), list(sim_ids), since)
+
+
 def with_period(table: pd.DataFrame, version: tuple[Any, ...], since: int | None) -> pd.DataFrame:
     """P&L de chaque simulation sur la période choisie, ramené à 1 000 € au début de la période
     (ou à son démarrage s'il est postérieur), et, pour les R et RA, celui de leur jumelle
     d'origine sur la même période."""
     out = table.copy()
+    risk = risk_table(version, tuple(int(i) for i in out["sim_id"]), since or 0)
+    for column in queries.RISK_COLUMNS:
+        out[column] = out["sim_id"].map(risk[column]).astype(float)
     if since is None:
         out["period_pnl"] = out["pnl_eur"]
         return out
@@ -1143,13 +1155,24 @@ def all_simulations(table: pd.DataFrame, version: tuple[Any, ...]) -> None:
     ):
         values = view[column] if column in view else pd.Series(index=view.index, dtype=float)
         shown[label] = values.map(lambda v: "—" if pd.isna(v) else fmt.signed_eur(v)).to_numpy()
+    risk = (
+        ("current_dd", "Recul depuis le pic", lambda v: fmt.pct(v)),
+        ("downside", "Écart à la baisse", lambda v: fmt.pct(v, 2)),
+        ("ulcer", "Ulcer", lambda v: fmt.number(v, 1)),
+        ("ulcer_ratio", "P&L ÷ Ulcer", lambda v: metric_value("calmar", v)),
+    )
+    for column, label, show in risk:
+        shown[label] = view[column].map(lambda v, f=show: "—" if pd.isna(v) else f(v)).to_numpy()
     st.dataframe(shown, hide_index=True, width="stretch", height=420)
     st.caption(
         f"{len(view)} simulations affichées. Idéales, recalibrages et RA tournent depuis leur "
         "propre démarrage à 1 000 € : leur P&L couvre une période plus courte que celle du "
         "plan. « P&L origine (même période) » : P&L de la jumelle d'origine sur cette même "
         "période, ramené à 1 000 €. « P&L période » : P&L sur la période de comparaison, "
-        "ramené à 1 000 € à son début."
+        "ramené à 1 000 € à son début. Risque sur la même période : « Recul depuis le pic » "
+        "(sous le plus haut, maintenant), « Écart à la baisse » (volatilité des seuls jours "
+        "de baisse), « Ulcer » (profondeur et durée des reculs), « P&L ÷ Ulcer » (P&L % "
+        "rapporté à l'Ulcer, plancher 1)."
     )
     simulations_chart(table, view, since)
 
